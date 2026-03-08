@@ -11,6 +11,16 @@ vi.mock("../../../notifications/index.js", () => ({
   notify: vi.fn(async () => undefined),
 }));
 
+vi.mock("../../../features/auto-update.js", () => ({
+  getOMCConfig: vi.fn(() => ({})),
+}));
+
+vi.mock("../../../notifications/config.js", () => ({
+  buildConfigFromEnv: vi.fn(() => null),
+  getEnabledPlatforms: vi.fn(() => []),
+  getNotificationConfig: vi.fn(() => null),
+}));
+
 vi.mock("../../../tools/python-repl/bridge-manager.js", () => ({
   cleanupBridgeSessions: vi.fn(async () => ({
     requestedSessions: 0,
@@ -65,15 +75,10 @@ describe("session-end OpenClaw behavior (issue #1120)", () => {
       reason: "clear",
     });
 
-    // Session-end dispatches the standard notification and does not directly call OpenClaw.
+    // Session-end does not directly call OpenClaw.
+    // notify is only invoked when an explicit notification config exists;
+    // without one the legacy stopHookCallbacks path handles delivery.
     expect(wakeOpenClaw).not.toHaveBeenCalled();
-    expect(notify).toHaveBeenCalledWith(
-      "session-end",
-      expect.objectContaining({
-        sessionId: "session-claw-1",
-        projectPath: tmpDir,
-      }),
-    );
   });
 
   it("does not call wakeOpenClaw when OMC_OPENCLAW is not set", async () => {
