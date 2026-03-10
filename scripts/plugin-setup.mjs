@@ -60,10 +60,10 @@ async function main() {
   const home = homedir();
   let pluginCacheDir = null;
 
-  // 1. Try plugin cache first (marketplace: omc, plugin: oh-my-claudecode)
+  // 1. Try plugin cache first (marketplace: omc, plugin: oh-my-openagent)
   // Respect CLAUDE_CONFIG_DIR so installs under a custom config dir are found
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(home, ".claude");
-  const pluginCacheBase = join(configDir, "plugins", "cache", "omc", "oh-my-claudecode");
+  const pluginCacheBase = join(configDir, "plugins", "cache", "omc", "oh-my-openagent");
   if (existsSync(pluginCacheBase)) {
     try {
       const versions = readdirSync(pluginCacheBase);
@@ -89,10 +89,10 @@ async function main() {
 
   // 2. Development paths
   const devPaths = [
-    join(home, "Workspace/oh-my-claudecode/dist/hud/index.js"),
-    join(home, "workspace/oh-my-claudecode/dist/hud/index.js"),
-    join(home, "Workspace/oh-my-claudecode/dist/hud/index.js"),
-    join(home, "workspace/oh-my-claudecode/dist/hud/index.js"),
+    join(home, "Workspace/oh-my-openagent/dist/hud/index.js"),
+    join(home, "workspace/oh-my-openagent/dist/hud/index.js"),
+    join(home, "Workspace/oh-my-openagent/dist/hud/index.js"),
+    join(home, "workspace/oh-my-openagent/dist/hud/index.js"),
   ];
 
   for (const devPath of devPaths) {
@@ -122,9 +122,9 @@ async function main() {
       console.log(\`[OMC HUD] Plugin HUD load failed. Run: cd "\${pluginCacheDir}" && npm install && npm run build\`);
     }
   } else if (existsSync(pluginCacheBase)) {
-    console.log("[OMC HUD] Plugin cache found but no versions installed. Run: /oh-my-claudecode:omc-setup");
+    console.log("[OMC HUD] Plugin cache found but no versions installed. Run: /oh-my-openagent:omc-setup");
   } else {
-    console.log("[OMC HUD] Plugin not installed. Run: /oh-my-claudecode:omc-setup");
+    console.log("[OMC HUD] Plugin not installed. Run: /oh-my-openagent:omc-setup");
   }
 }
 

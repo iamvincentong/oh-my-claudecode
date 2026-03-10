@@ -20,8 +20,8 @@ import { purgeStalePluginCacheVersions } from '../utils/paths.js';
 import type { NotificationConfig } from '../notifications/types.js';
 
 /** GitHub repository information */
-export const REPO_OWNER = 'Yeachan-Heo';
-export const REPO_NAME = 'oh-my-claudecode';
+export const REPO_OWNER = 'code-yeongyu';
+export const REPO_NAME = 'oh-my-openagent';
 export const GITHUB_API_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}`;
 export const GITHUB_RAW_URL = `https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}`;
 
@@ -302,15 +302,15 @@ export function getInstalledVersion(): VersionMetadata | null {
     // Try to detect version from package.json if installed via npm
     try {
       // Check if we can find the package in node_modules
-      const result = execSync('npm list -g oh-my-claude-sisyphus --json', {
+      const result = execSync('npm list -g oh-my-openagent --json', {
         encoding: 'utf-8',
         timeout: 5000,
         stdio: 'pipe'
       });
       const data = JSON.parse(result);
-      if (data.dependencies?.['oh-my-claude-sisyphus']?.version) {
+      if (data.dependencies?.['oh-my-openagent']?.version) {
         return {
-          version: data.dependencies['oh-my-claude-sisyphus'].version,
+          version: data.dependencies['oh-my-openagent'].version,
           installedAt: new Date().toISOString(),
           installMethod: 'npm'
         };
@@ -359,7 +359,7 @@ export async function fetchLatestRelease(): Promise<ReleaseInfo> {
   const response = await fetch(`${GITHUB_API_URL}/releases/latest`, {
     headers: {
       'Accept': 'application/vnd.github.v3+json',
-      'User-Agent': 'oh-my-claudecode-updater'
+      'User-Agent': 'oh-my-openagent-updater'
     }
   });
 
@@ -367,7 +367,7 @@ export async function fetchLatestRelease(): Promise<ReleaseInfo> {
     // No releases found - try to get version from package.json in repo
     const pkgResponse = await fetch(`${GITHUB_RAW_URL}/main/package.json`, {
       headers: {
-        'User-Agent': 'oh-my-claudecode-updater'
+        'User-Agent': 'oh-my-openagent-updater'
       }
     });
 
@@ -528,7 +528,7 @@ export async function performUpdate(options?: {
         success: false,
         previousVersion,
         newVersion: 'unknown',
-        message: 'Running as a Claude Code plugin. Use "/plugin install oh-my-claudecode" to update, or pass --standalone to force npm update.',
+        message: 'Running as a Claude Code plugin. Use "/plugin install oh-my-openagent" to update, or pass --standalone to force npm update.',
       };
     }
 
@@ -538,7 +538,7 @@ export async function performUpdate(options?: {
 
     // Use npm for updates on all platforms (install.sh was removed)
     try {
-      execSync('npm install -g oh-my-claude-sisyphus@latest', {
+      execSync('npm install -g oh-my-openagent@latest', {
         encoding: 'utf-8',
         stdio: options?.verbose ? 'inherit' : 'pipe',
         timeout: 120000, // 2 minute timeout for npm
@@ -618,8 +618,8 @@ export async function performUpdate(options?: {
     } catch (npmError) {
       throw new Error(
         'Auto-update via npm failed. Please run manually:\n' +
-        '  npm install -g oh-my-claude-sisyphus@latest\n' +
-        'Or use: /plugin install oh-my-claudecode\n' +
+        '  npm install -g oh-my-openagent@latest\n' +
+        'Or use: /plugin install oh-my-openagent\n' +
         `Error: ${npmError instanceof Error ? npmError.message : npmError}`
       );
     }
@@ -640,19 +640,19 @@ export async function performUpdate(options?: {
  */
 export function formatUpdateNotification(checkResult: UpdateCheckResult): string {
   if (!checkResult.updateAvailable) {
-    return `oh-my-claudecode is up to date (v${checkResult.currentVersion ?? 'unknown'})`;
+    return `oh-my-openagent is up to date (v${checkResult.currentVersion ?? 'unknown'})`;
   }
 
   const lines = [
     '╔═══════════════════════════════════════════════════════════╗',
-    '║           oh-my-claudecode Update Available!              ║',
+    '║           oh-my-openagent Update Available!              ║',
     '╚═══════════════════════════════════════════════════════════╝',
     '',
     `  Current version: ${checkResult.currentVersion ?? 'unknown'}`,
     `  Latest version:  ${checkResult.latestVersion}`,
     '',
     '  To update, run: /update',
-    '  Or reinstall via: /plugin install oh-my-claudecode',
+    '  Or reinstall via: /plugin install oh-my-openagent',
     ''
   ];
 

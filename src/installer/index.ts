@@ -209,7 +209,7 @@ export function isHudEnabledInConfig(): boolean {
 }
 
 /**
- * Detect whether a statusLine config belongs to oh-my-claudecode.
+ * Detect whether a statusLine config belongs to oh-my-openagent.
  *
  * Checks the command string for known OMC HUD paths so that custom
  * (non-OMC) statusLine configurations are preserved during forced
@@ -250,11 +250,11 @@ const OMC_HOOK_FILENAMES = new Set([
 ]);
 
 /**
- * Detect whether a hook command belongs to oh-my-claudecode.
+ * Detect whether a hook command belongs to oh-my-openagent.
  *
  * Recognition strategy (any match is sufficient):
  * 1. Command path contains "omc" as a path/word segment (e.g. `omc-hook.mjs`, `/omc/`)
- * 2. Command path contains "oh-my-claudecode"
+ * 2. Command path contains "oh-my-openagent"
  * 3. Command references a known OMC hook filename inside .claude/hooks/
  *
  * @param command - The hook command string
@@ -265,7 +265,7 @@ export function isOmcHook(command: string): boolean {
   // Match "omc" as a path segment or word boundary
   // Matches: /omc/, /omc-, omc/, -omc, _omc, omc_
   const omcPattern = /(?:^|[\/\\_-])omc(?:$|[\/\\_-])/;
-  const fullNamePattern = /oh-my-claudecode/;
+  const fullNamePattern = /oh-my-openagent/;
   if (omcPattern.test(lowerCommand) || fullNamePattern.test(lowerCommand)) {
     return true;
   }
@@ -382,7 +382,7 @@ function getInstalledOmcPluginRoots(): string[] {
     const plugins = raw.plugins ?? raw;
 
     for (const [pluginId, entries] of Object.entries(plugins)) {
-      if (!pluginId.toLowerCase().includes('oh-my-claudecode') || !Array.isArray(entries)) {
+      if (!pluginId.toLowerCase().includes('oh-my-openagent') || !Array.isArray(entries)) {
         continue;
       }
 
@@ -504,7 +504,7 @@ export function extractOmcVersionFromClaudeMd(content: string): string | null {
     return markerVersion.startsWith('v') ? markerVersion : `v${markerVersion}`;
   }
 
-  const headingMatch = content.match(/^#\s+oh-my-claudecode.*?\b(v?\d+\.\d+\.\d+(?:[-+][^\s]+)?)\b/m);
+  const headingMatch = content.match(/^#\s+oh-my-openagent.*?\b(v?\d+\.\d+\.\d+(?:[-+][^\s]+)?)\b/m);
   if (headingMatch?.[1]) {
     const headingVersion = headingMatch[1].trim();
     return headingVersion.startsWith('v') ? headingVersion : `v${headingVersion}`;
@@ -862,9 +862,9 @@ export function install(options: InstallOptions = {}): InstallResult {
         '  // 1. Development paths (only when OMC_DEV=1)',
         '  if (process.env.OMC_DEV === "1") {',
         '    const devPaths = [',
-        '      join(home, "Workspace/oh-my-claudecode/dist/hud/index.js"),',
-        '      join(home, "workspace/oh-my-claudecode/dist/hud/index.js"),',
-        '      join(home, "projects/oh-my-claudecode/dist/hud/index.js"),',
+        '      join(home, "Workspace/oh-my-openagent/dist/hud/index.js"),',
+        '      join(home, "workspace/oh-my-openagent/dist/hud/index.js"),',
+        '      join(home, "projects/oh-my-openagent/dist/hud/index.js"),',
         '    ];',
         '    ',
         '    for (const devPath of devPaths) {',
@@ -880,7 +880,7 @@ export function install(options: InstallOptions = {}): InstallResult {
         '  // 2. Plugin cache (for production installs)',
         '  // Respect CLAUDE_CONFIG_DIR so installs under a custom config dir are found',
         '  const configDir = process.env.CLAUDE_CONFIG_DIR || join(home, ".claude");',
-        '  const pluginCacheBase = join(configDir, "plugins", "cache", "omc", "oh-my-claudecode");',
+        '  const pluginCacheBase = join(configDir, "plugins", "cache", "omc", "oh-my-openagent");',
         '  if (existsSync(pluginCacheBase)) {',
         '    try {',
         '      const versions = readdirSync(pluginCacheBase);',
@@ -920,7 +920,7 @@ export function install(options: InstallOptions = {}): InstallResult {
         '  ',
         '  // 4. npm package (global or local install)',
         '  try {',
-        '    await import("oh-my-claudecode/dist/hud/index.js");',
+        '    await import("oh-my-openagent/dist/hud/index.js");',
         '    return;',
         '  } catch { /* continue */ }',
         '  ',

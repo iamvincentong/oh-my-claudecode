@@ -1,13 +1,13 @@
-# OMC Analytics CLI
+# oh-my-openagent Analytics CLI
 
-Command-line interface for Oh-My-ClaudeCode analytics, token tracking, cost reports, and session management.
+Command-line interface for oh-my-openagent analytics, token tracking, cost reports, and session management.
 
 ## Installation
 
-Install via npm (note: the repo/command branding is `oh-my-claudecode`, but the published npm package name is `oh-my-claude-sisyphus`):
+Install via npm using the published package name:
 
 ```bash
-npm i -g oh-my-claude-sisyphus@latest
+npm i -g oh-my-openagent@latest
 ```
 
 The `omc-analytics` command will be available globally.

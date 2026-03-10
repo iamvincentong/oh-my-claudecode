@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Oh-My-ClaudeCode CLI
+ * Oh-My-OpenAgent CLI
  *
  * Command-line interface for the OMC multi-agent system.
  *
@@ -172,7 +172,7 @@ Examples:
     const targetPath = options.global ? paths.user : paths.project;
     const targetDir = dirname(targetPath);
 
-    console.log(chalk.blue('Oh-My-ClaudeCode Configuration Setup\n'));
+    console.log(chalk.blue('Oh-My-OpenAgent Configuration Setup\n'));
 
     // Check if config already exists
     if (existsSync(targetPath) && !options.force) {
@@ -193,8 +193,8 @@ Examples:
     const modelLow = getDefaultModelLow();
 
     // Generate config content
-    const configContent = `// Oh-My-ClaudeCode Configuration
-// See: https://github.com/Yeachan-Heo/oh-my-claudecode for documentation
+    const configContent = `// Oh-My-OpenAgent Configuration
+// See: https://github.com/code-yeongyu/oh-my-openagent for documentation
 //
 // Model IDs can be overridden via environment variables:
 //   OMC_MODEL_HIGH   (opus-class)
@@ -812,7 +812,7 @@ Examples:
   .action(async () => {
     const session = createOmcSession();
 
-    console.log(chalk.blue.bold('\nOh-My-ClaudeCode System Information\n'));
+    console.log(chalk.blue.bold('\nOh-My-OpenAgent System Information\n'));
     console.log(chalk.gray('━'.repeat(50)));
 
     console.log(chalk.blue('\nAvailable Agents:'));
@@ -891,7 +891,7 @@ Examples:
   $ omc update --standalone      Force npm update in plugin context`)
   .action(async (options) => {
     if (!options.quiet) {
-      console.log(chalk.blue('Oh-My-ClaudeCode Update\n'));
+      console.log(chalk.blue('Oh-My-OpenAgent Update\n'));
     }
 
     try {
@@ -996,7 +996,7 @@ Examples:
   .action(async () => {
     const installed = getInstalledVersion();
 
-    console.log(chalk.blue.bold('\nOh-My-ClaudeCode Version Information\n'));
+    console.log(chalk.blue.bold('\nOh-My-OpenAgent Version Information\n'));
     console.log(chalk.gray('━'.repeat(50)));
 
     console.log(`\n  Package version:   ${chalk.green(version)}`);
@@ -1017,7 +1017,7 @@ Examples:
     }
 
     console.log(chalk.gray('\n━'.repeat(50)));
-    console.log(chalk.gray('\nTo check for updates, run: oh-my-claudecode update --check'));
+    console.log(chalk.gray('\nTo check for updates, run: oh-my-openagent update --check'));
   });
 
 /**
@@ -1037,7 +1037,7 @@ Examples:
   .action(async (options) => {
     if (!options.quiet) {
       console.log(chalk.blue('╔═══════════════════════════════════════════════════════════╗'));
-      console.log(chalk.blue('║         Oh-My-ClaudeCode Installer                        ║'));
+      console.log(chalk.blue('║         Oh-My-OpenAgent Installer                        ║'));
       console.log(chalk.blue('║   Multi-Agent Orchestration for Claude Code               ║'));
       console.log(chalk.blue('╚═══════════════════════════════════════════════════════════╝'));
       console.log('');
@@ -1323,7 +1323,7 @@ Examples:
   $ omc setup --force-hooks       Force reinstall hooks`)
   .action(async (options) => {
     if (!options.quiet) {
-      console.log(chalk.blue('Oh-My-ClaudeCode Setup\n'));
+      console.log(chalk.blue('Oh-My-OpenAgent Setup\n'));
     }
 
     // Step 1: Run installation (which handles hooks, agents, skills)
@@ -1399,13 +1399,13 @@ program
     });
 
     if (result.success) {
-      console.log(chalk.green('✓ Oh-My-ClaudeCode installed successfully!'));
-      console.log(chalk.gray('  Run "oh-my-claudecode info" to see available agents.'));
+      console.log(chalk.green('✓ Oh-My-OpenAgent installed successfully!'));
+      console.log(chalk.gray('  Run "oh-my-openagent info" to see available agents.'));
       console.log(chalk.yellow('  Run "/omc-default" (project) or "/omc-default-global" (global) in Claude Code.'));
     } else {
       // Don't fail the npm install, just warn
       console.warn(chalk.yellow('⚠ Could not complete OMC setup:'), result.message);
-      console.warn(chalk.gray('  Run "oh-my-claudecode install" manually to complete setup.'));
+      console.warn(chalk.gray('  Run "oh-my-openagent install" manually to complete setup.'));
     }
   });
 

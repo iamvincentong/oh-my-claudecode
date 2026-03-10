@@ -63,13 +63,13 @@ export function getConfigDir(): string {
 }
 
 /**
- * Get the plugin cache base directory for oh-my-claudecode.
+ * Get the plugin cache base directory for oh-my-openagent.
  * This is the directory containing version subdirectories.
  *
- * Structure: <configDir>/plugins/cache/omc/oh-my-claudecode/
+ * Structure: <configDir>/plugins/cache/omc/oh-my-openagent/
  */
 export function getPluginCacheBase(): string {
-  return join(getClaudeConfigDir(), 'plugins', 'cache', 'omc', 'oh-my-claudecode');
+  return join(getClaudeConfigDir(), 'plugins', 'cache', 'omc', 'oh-my-openagent');
 }
 
 /**
