@@ -41,12 +41,13 @@ const EXECUTION_MODES: [string, ...string[]] = [
 // Extended type for state tools - includes state-bearing modes outside mode-registry
 const STATE_TOOL_MODES: [string, ...string[]] = [
   ...EXECUTION_MODES,
+  'skill-active',
   'ralplan',
   'omc-teams',
   'deep-interview',
   'self-improve'
 ];
-const EXTRA_STATE_ONLY_MODES = ['ralplan', 'omc-teams', 'deep-interview', 'self-improve'] as const;
+const EXTRA_STATE_ONLY_MODES = ['skill-active', 'ralplan', 'omc-teams', 'deep-interview', 'self-improve'] as const;
 type StateToolMode = typeof STATE_TOOL_MODES[number];
 const CANCEL_SIGNAL_TTL_MS = 30_000;
 

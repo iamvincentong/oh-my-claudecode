@@ -186,6 +186,30 @@ describe('cancel-integration', () => {
       expect(result.content[0].text).toContain('Locations cleared: 4');
       expect(result.content[0].text).toContain('WARNING: No session_id provided');
     });
+
+    it('should clear skill-active state across legacy and session paths', async () => {
+      const sessionId = 'skill-active-force-session';
+      const sessionDir = join(TEST_DIR, '.omc', 'state', 'sessions', sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+
+      writeFileSync(
+        join(sessionDir, 'skill-active-state.json'),
+        JSON.stringify({ active: true, skill_name: 'plan', session_id: sessionId }),
+      );
+      writeFileSync(
+        join(TEST_DIR, '.omc', 'state', 'skill-active-state.json'),
+        JSON.stringify({ active: true, skill_name: 'plan' }),
+      );
+
+      const result = await stateClearTool.handler({
+        mode: 'skill-active',
+        workingDirectory: TEST_DIR,
+      });
+
+      expect(existsSync(join(sessionDir, 'skill-active-state.json'))).toBe(false);
+      expect(existsSync(join(TEST_DIR, '.omc', 'state', 'skill-active-state.json'))).toBe(false);
+      expect(result.content[0].text).toContain('Locations cleared: 2');
+    });
   });
 
   describe('3. Cancel signal', () => {

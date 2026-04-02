@@ -51,7 +51,7 @@ escape from the stop hook loop**. This is NOT a full replacement for the cancel 
 it only removes state files to unblock the session. Linked modes (e.g. ralph→ultrawork,
 autopilot→ralph/ultraqa) must be cleared separately by running the fallback once per mode.
 
-Replace `MODE` with the specific mode (e.g. `ralplan`, `ralph`, `ultrawork`, `ultraqa`).
+Replace `MODE` with the specific mode (e.g. `ralplan`, `ralph`, `ultrawork`, `ultraqa`, `skill-active`).
 
 **WARNING:** Do NOT use this fallback for `autopilot` or `omc-teams`. Autopilot requires
 `state_write(active=false)` to preserve resume data. omc-teams requires tmux session
@@ -85,6 +85,7 @@ MODE="ralplan"  # <-- replace with the target mode
 if [ -n "$SESSION_ID" ] && [ -d "$OMC_STATE/sessions/$SESSION_ID" ]; then
   rm -f "$OMC_STATE/sessions/$SESSION_ID/${MODE}-state.json"
   rm -f "$OMC_STATE/sessions/$SESSION_ID/${MODE}-stop-breaker.json"
+  rm -f "$OMC_STATE/sessions/$SESSION_ID/skill-active-state.json"
   # Write cancel signal so stop hook detects cancellation in progress
   NOW_ISO="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   EXPIRES_ISO="$(date -u -d "+30 seconds" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || python3 - <<'PY'\nfrom datetime import datetime, timedelta, timezone\nprint((datetime.now(timezone.utc) + timedelta(seconds=30)).strftime('%Y-%m-%dT%H:%M:%SZ'))\nPY\n)"
@@ -95,6 +96,7 @@ fi
 # Clear legacy state only if no session ID (avoid clearing another session's state)
 if [ -z "$SESSION_ID" ]; then
   rm -f "$OMC_STATE/${MODE}-state.json"
+  rm -f "$OMC_STATE/skill-active-state.json"
 fi
 ```
 
@@ -105,6 +107,7 @@ fi
 - When a session id is provided or already known, that session-scoped path is authoritative. Legacy files in `.omc/state/*.json` are consulted only as a compatibility fallback if the session id is missing or empty.
 - Swarm is a shared SQLite/marker mode (`.omc/state/swarm.db` / `.omc/state/swarm-active.marker`) and is not session-scoped.
 - The default cleanup flow calls `state_clear` with the session id to remove only the matching session files; modes stay bound to their originating session.
+- `skill-active-state.json` is part of that state-tool cleanup surface, so cancel clears active skill protection state alongside execution-mode state.
 
 Active modes are still cancelled in dependency order:
 1. Autopilot (includes linked ralph/ultraqa/ cleanup)
@@ -158,6 +161,7 @@ Legacy compatibility list (removed only under `--force`/`--all`):
 - `.omc/state/omc-teams-state.json`
 - `.omc/state/plan-consensus.json`
 - `.omc/state/ralplan-state.json`
+- `.omc/state/skill-active-state.json`
 - `.omc/state/boulder.json`
 - `.omc/state/hud-state.json`
 - `.omc/state/subagent-tracking.json`

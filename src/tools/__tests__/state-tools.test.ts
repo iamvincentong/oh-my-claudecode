@@ -137,6 +137,25 @@ describe('state-tools', () => {
       expect(existsSync(join(sessionDir, 'ralplan-state.json'))).toBe(false);
     });
 
+    it('should clear skill-active state with explicit session_id', async () => {
+      const sessionId = 'test-session-skill-active';
+      const sessionDir = join(TEST_DIR, '.omc', 'state', 'sessions', sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(
+        join(sessionDir, 'skill-active-state.json'),
+        JSON.stringify({ active: true, skill_name: 'plan', session_id: sessionId }),
+      );
+
+      const result = await stateClearTool.handler({
+        mode: 'skill-active',
+        session_id: sessionId,
+        workingDirectory: TEST_DIR,
+      });
+
+      expect(result.content[0].text).toContain('cleared');
+      expect(existsSync(join(sessionDir, 'skill-active-state.json'))).toBe(false);
+    });
+
     it('should also remove non-session legacy state files during session clear', async () => {
       const sessionId = 'legacy-cleanup-session';
       const sessionDir = join(TEST_DIR, '.omc', 'state', 'sessions', sessionId);
@@ -344,6 +363,24 @@ describe('state-tools', () => {
       expect(result.content[0].text).toContain('deep-interview');
     });
 
+    it('should include skill-active when skill-active state is active', async () => {
+      const sessionId = 'skill-active-session';
+      await stateWriteTool.handler({
+        mode: 'skill-active',
+        active: true,
+        state: { skill_name: 'plan' },
+        session_id: sessionId,
+        workingDirectory: TEST_DIR,
+      });
+
+      const result = await stateListActiveTool.handler({
+        session_id: sessionId,
+        workingDirectory: TEST_DIR,
+      });
+
+      expect(result.content[0].text).toContain('skill-active');
+    });
+
     it('should include team in status output when team state is active', async () => {
       await stateWriteTool.handler({
         mode: 'team',
@@ -371,6 +408,27 @@ describe('state-tools', () => {
 
       expect(result.content[0].text).toContain('Status: ralph');
       expect(result.content[0].text).toContain('Active:');
+    });
+
+    it('should return status for skill-active mode in a session', async () => {
+      const sessionId = 'skill-active-status-session';
+      await stateWriteTool.handler({
+        mode: 'skill-active',
+        active: true,
+        state: { skill_name: 'plan' },
+        session_id: sessionId,
+        workingDirectory: TEST_DIR,
+      });
+
+      const result = await stateGetStatusTool.handler({
+        mode: 'skill-active',
+        session_id: sessionId,
+        workingDirectory: TEST_DIR,
+      });
+
+      expect(result.content[0].text).toContain('Status: skill-active');
+      expect(result.content[0].text).toContain('skill-active-state.json');
+      expect(result.content[0].text).toContain('**Active:** Yes');
     });
 
     it('should return all mode statuses when no mode specified', async () => {
