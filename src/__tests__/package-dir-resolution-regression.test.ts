@@ -74,29 +74,14 @@ describe('package dir resolution regression (#1322, #1324)', () => {
     );
   });
 
-  it('bridge/cli.cjs keeps builtin skills package-dir resolution bridge-aware', () => {
+  it('bridge/cli.cjs delegates to the dist CLI entrypoint', () => {
     const source = readFileSync(join(REPO_ROOT, 'bridge', 'cli.cjs'), 'utf-8');
-    const skillsDirIndex = source.indexOf('var SKILLS_DIR2 =');
-    const helperIndex = source.lastIndexOf('function getPackageDir', skillsDirIndex);
-    const snippet = helperIndex === -1 ? '' : source.slice(helperIndex, helperIndex + 1400);
-
-    expect(snippet).toContain('typeof __dirname !== "undefined"');
-    expect(snippet).toContain('currentDirName === "bridge"');
-    expect(snippet).toContain('fileURLToPath)(importMetaUrl)');
-    expect(snippet.indexOf('typeof __dirname !== "undefined"')).toBeLessThan(
-      snippet.indexOf('fileURLToPath)(importMetaUrl)'),
-    );
+    expect(source).toContain("pathToFileURL(join(__dirname, '..', 'dist', 'cli', 'index.js')).href");
   });
 
-  it('bridge/team.js keeps import.meta package-dir resolution bridge-aware', () => {
+  it('bridge/team.js re-exports the dist team module', () => {
     const source = readFileSync(join(REPO_ROOT, 'bridge', 'team.js'), 'utf-8');
-    const snippet = getSnippetByMarker(source, 'function getPackageDir() {');
-
-    expect(snippet).toContain('fileURLToPath(import.meta.url)');
-    expect(snippet).toContain('currentDirName === "bridge"');
-    expect(snippet.indexOf('fileURLToPath(import.meta.url)')).toBeLessThan(
-      snippet.indexOf('return join6(__dirname2, "..", "..")'),
-    );
+    expect(source).toContain("export * from '../dist/cli/team.js'");
   });
 
   it('loadAgentPrompt resolves prompts even when cwd is unrelated', () => {
