@@ -24,6 +24,19 @@ const {
 const { join, dirname, resolve, normalize } = require("path");
 const { getClaudeConfigDir } = require("./lib/config-dir.cjs");
 
+// Hard max iterations — safety net absent from CJS (TS has getHardMaxIterations()).
+// Mirrors src/lib/security-config.ts defaults without pulling in JSONC config parsing.
+const HARD_MAX_ITERATIONS = (() => {
+  const env = parseInt(process.env.OMC_HARD_MAX_ITERATIONS, 10);
+  if (!isNaN(env) && env > 0) return env;
+  return process.env.OMC_SECURITY === 'strict' ? 200 : 500;
+})();
+
+// Rapid-fire circuit breaker threshold (seconds).
+// If the stop hook fires again within this window, it's likely a deadlock.
+const RAPID_BLOCK_GAP_SECONDS = 15;
+const RAPID_BLOCK_THRESHOLD = 5;
+
 async function readStdin(timeoutMs = 2000) {
   return new Promise((resolve) => {
     const chunks = [];
@@ -702,6 +715,30 @@ async function main() {
       const iteration = ralph.state.iteration || 1;
       const maxIter = ralph.state.max_iterations || 100;
 
+      // Safety net: hard max iterations (mirrors TS getHardMaxIterations())
+      if (HARD_MAX_ITERATIONS > 0 && iteration >= HARD_MAX_ITERATIONS) {
+        ralph.state.active = false;
+        ralph.state.last_checked_at = new Date().toISOString();
+        if (shouldWriteStateBack(ralph.path)) {
+          writeJsonFile(ralph.path, ralph.state);
+        }
+        console.log(JSON.stringify({ decision: "block", reason: `[RALPH - HARD LIMIT] Reached hard max iterations (${HARD_MAX_ITERATIONS}). Mode auto-disabled. Restart with /oh-my-claudecode:ralph if needed.` }));
+        return;
+      }
+
+      // Rapid-fire circuit breaker: detect prompt authority deadlock.
+      // If the hook fires repeatedly within RAPID_BLOCK_GAP_SECONDS, the LLM
+      // is likely stuck in a stop→block→stop loop and can't call /cancel.
+      const now = Date.now();
+      const lastChecked = ralph.state.last_checked_at ? new Date(ralph.state.last_checked_at).getTime() : 0;
+      const gapSeconds = (now - lastChecked) / 1000;
+      if (gapSeconds > 0 && gapSeconds < RAPID_BLOCK_GAP_SECONDS) {
+        ralph.state.rapid_block_count = (ralph.state.rapid_block_count || 0) + 1;
+      } else {
+        ralph.state.rapid_block_count = 0;
+      }
+      const isDeadlocked = ralph.state.rapid_block_count >= RAPID_BLOCK_THRESHOLD;
+
       if (iteration < maxIter) {
         ralph.state.iteration = iteration + 1;
         ralph.state.last_checked_at = new Date().toISOString();
@@ -714,7 +751,9 @@ async function main() {
         // Fire-and-forget notification
         sendStopNotification('ralph', ralph.state, sessionId, directory).catch(() => {});
 
-        const ralphReason = `[RALPH LOOP - ITERATION ${iteration + 1}/${maxIter}] Work is NOT done. Continue working.\nWhen FULLY complete (after Architect verification), run /oh-my-claudecode:cancel to cleanly exit ralph mode and clean up all state files. If cancel fails, retry with /oh-my-claudecode:cancel --force.\n${ralph.state.prompt ? `Task: ${ralph.state.prompt}` : ""}`;
+        const ralphReason = isDeadlocked
+          ? `[RALPH - POSSIBLE DEADLOCK - ITERATION ${iteration + 1}/${maxIter}] You may be stuck in a loop. If work is complete and verified, run /oh-my-claudecode:cancel now. If not, describe what specifically remains.\n${ralph.state.prompt ? `Task: ${ralph.state.prompt}` : ""}`
+          : `[RALPH LOOP - ITERATION ${iteration + 1}/${maxIter}] If work is complete and verified, run /oh-my-claudecode:cancel to cleanly exit ralph mode.\nOtherwise, continue working on the task.\n${ralph.state.prompt ? `Task: ${ralph.state.prompt}` : ""}`;
         console.log(
           JSON.stringify({
             decision: "block",
@@ -723,7 +762,7 @@ async function main() {
         );
         return;
       } else {
-        // Do not silently stop Ralph once it hits max iterations; extend and keep going.
+        // Extend max iterations, but respect hard ceiling.
         ralph.state.max_iterations = maxIter + 10;
         ralph.state.iteration = maxIter + 1;
         ralph.state.last_checked_at = new Date().toISOString();
@@ -732,7 +771,9 @@ async function main() {
           return;
         }
         writeJsonFile(ralph.path, ralph.state);
-        const extendReason = `[RALPH LOOP - EXTENDED] Max iterations reached; extending to ${ralph.state.max_iterations} and continuing. When FULLY complete (after Architect verification), run /oh-my-claudecode:cancel (or --force).`;
+        const extendReason = isDeadlocked
+          ? `[RALPH - POSSIBLE DEADLOCK - EXTENDED] If work is complete, run /oh-my-claudecode:cancel now. If not, describe what specifically remains.`
+          : `[RALPH LOOP - EXTENDED] Extended to ${ralph.state.max_iterations} iterations. If work is complete and verified, run /oh-my-claudecode:cancel. Otherwise, continue working.`;
         console.log(JSON.stringify({ decision: "block", reason: extendReason }));
         return;
       }

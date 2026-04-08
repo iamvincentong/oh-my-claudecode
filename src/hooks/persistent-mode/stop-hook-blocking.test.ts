@@ -994,5 +994,91 @@ describe("Stop Hook Blocking Contract", () => {
       });
       expect(output.continue).toBe(true);
     });
+
+    it("auto-disables ralph at hard max iterations in cjs script", () => {
+      const sessionId = "ralph-hard-max-cjs";
+      const sessionDir = join(tempDir, ".omc", "state", "sessions", sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+      writeFileSync(
+        join(sessionDir, "ralph-state.json"),
+        JSON.stringify({
+          active: true,
+          iteration: 500,
+          max_iterations: 510,
+          session_id: sessionId,
+          started_at: new Date().toISOString(),
+          last_checked_at: new Date().toISOString(),
+        })
+      );
+
+      const output = runScript({
+        directory: tempDir,
+        sessionId,
+      });
+      expect(output.decision).toBe("block");
+      expect((output.reason as string)).toContain("HARD LIMIT");
+
+      const updated = JSON.parse(readFileSync(join(sessionDir, "ralph-state.json"), "utf-8"));
+      expect(updated.active).toBe(false);
+    });
+
+    it("emits deadlock prompt after rapid-fire blocks in cjs script", () => {
+      const sessionId = "ralph-deadlock-cjs";
+      const sessionDir = join(tempDir, ".omc", "state", "sessions", sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+      // Simulate rapid-fire: last_checked_at is 2 seconds ago, rapid_block_count already at 5
+      const twoSecondsAgo = new Date(Date.now() - 2000).toISOString();
+      writeFileSync(
+        join(sessionDir, "ralph-state.json"),
+        JSON.stringify({
+          active: true,
+          iteration: 10,
+          max_iterations: 100,
+          session_id: sessionId,
+          started_at: new Date(Date.now() - 60000).toISOString(),
+          last_checked_at: twoSecondsAgo,
+          rapid_block_count: 5,
+        })
+      );
+
+      const output = runScript({
+        directory: tempDir,
+        sessionId,
+      });
+      expect(output.decision).toBe("block");
+      expect((output.reason as string)).toContain("POSSIBLE DEADLOCK");
+    });
+
+    it("uses conditional prompt instead of authoritative 'Work is NOT done' in cjs script", () => {
+      const sessionId = "ralph-prompt-cjs";
+      const sessionDir = join(tempDir, ".omc", "state", "sessions", sessionId);
+      mkdirSync(sessionDir, { recursive: true });
+      // Normal iteration with no rapid-fire (last_checked_at far enough ago)
+      const thirtySecondsAgo = new Date(Date.now() - 30000).toISOString();
+      writeFileSync(
+        join(sessionDir, "ralph-state.json"),
+        JSON.stringify({
+          active: true,
+          iteration: 5,
+          max_iterations: 100,
+          session_id: sessionId,
+          started_at: new Date(Date.now() - 300000).toISOString(),
+          last_checked_at: thirtySecondsAgo,
+          prompt: "Fix the auth bug",
+        })
+      );
+
+      const output = runScript({
+        directory: tempDir,
+        sessionId,
+      });
+      expect(output.decision).toBe("block");
+      const reason = output.reason as string;
+      // Should NOT contain the old authoritative phrasing
+      expect(reason).not.toContain("Work is NOT done");
+      // Should contain conditional phrasing
+      expect(reason).toContain("If work is complete and verified");
+      expect(reason).toContain("/oh-my-claudecode:cancel");
+    });
   });
 });
