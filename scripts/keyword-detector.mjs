@@ -488,18 +488,12 @@ async function main() {
     }
 
     // Ralph keywords
-    if (hasActionableKeyword(cleanPrompt, /\b(ralph|don't stop|must complete|until done)\b|(랄프)(?!로렌)/i)) {
+    if (hasActionableKeyword(cleanPrompt, /\b(ralph)\b|(랄프)(?!로렌)/i)) {
       matches.push({ name: 'ralph', args: '' });
     }
 
     // Autopilot keywords
-    if (hasActionableKeyword(cleanPrompt, /\b(autopilot|auto pilot|auto-pilot|autonomous|full auto|fullsend)\b|(오토파일럿)/i) ||
-        hasActionableKeyword(cleanPrompt, /\b(build|create|make)\s+me\s+(an?\s+)?(app|feature|project|tool|plugin|website|api|server|cli|script|system|service|dashboard|bot|extension)\b/i) ||
-        hasActionableKeyword(cleanPrompt, /\bi\s+want\s+a\s+/i) ||
-        hasActionableKeyword(cleanPrompt, /\bi\s+want\s+an\s+/i) ||
-        hasActionableKeyword(cleanPrompt, /\bhandle\s+it\s+all\b/i) ||
-        hasActionableKeyword(cleanPrompt, /\bend\s+to\s+end\b/i) ||
-        hasActionableKeyword(cleanPrompt, /\be2e\s+this\b/i)) {
+    if (hasActionableKeyword(cleanPrompt, /\b(autopilot|auto[\s-]?pilot|fullsend|full\s+auto)\b|(오토파일럿)/i)) {
       matches.push({ name: 'autopilot', args: '' });
     }
 
@@ -553,7 +547,7 @@ async function main() {
     }
 
     // Ultrathink keywords
-    if (hasActionableKeyword(cleanPrompt, /\b(ultrathink|think hard|think deeply)\b|(울트라씽크)/i)) {
+    if (hasActionableKeyword(cleanPrompt, /\b(ultrathink)\b|(울트라씽크)/i)) {
       matches.push({ name: 'ultrathink', args: '' });
     }
 
