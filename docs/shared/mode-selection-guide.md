@@ -5,9 +5,9 @@
 | If you want... | Use this | Keyword |
 |----------------|----------|---------|
 | Clarify vague requirements first | `deep-interview` | "deep interview", "ouroboros", "don't assume" |
-| Full autonomous build from idea | `autopilot` | "autopilot", "build me", "I want a" |
+| Full autonomous build from idea | `autopilot` | "autopilot", "fullsend", "full auto" |
 | Parallel autonomous (3-5x faster) | `team` (replaces `ultrapilot`) | `/team N:executor "task"` |
-| Persistence until verified done | `ralph` | "ralph", "don't stop" |
+| Persistence until verified done | `ralph` | "ralph" |
 | Parallel execution, manual oversight | `ultrawork` | "ulw", "ultrawork" |
 | Cost-efficient execution | `` (modifier) | "eco", "budget" |
 | Many similar independent tasks | `team` (replaces `swarm`) | `/team N:executor "task"` |
@@ -53,7 +53,7 @@ Have many similar independent tasks (e.g., "fix 47 errors")?
 | "Refactor auth module thoroughly" | ralph | Need persistence + verification |
 | "Quick parallel execution" | ultrawork | Manual oversight preferred |
 | "Save tokens while fixing errors" |  + ultrawork | Cost-conscious parallel |
-| "Don't stop until done" | ralph | Persistence keyword detected |
+| "ralph refactor auth module" | ralph | Persistence keyword detected |
 
 ## Mode Types
 
