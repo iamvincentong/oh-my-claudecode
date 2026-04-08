@@ -163,7 +163,11 @@ function sanitizeForKeywordDetection(text) {
     // 5. Strip markdown code blocks (existing)
     .replace(/```[\s\S]*?```/g, '')
     // 6. Strip inline code (existing)
-    .replace(/`[^`]+`/g, '');
+    .replace(/`[^`]+`/g, '')
+    // 7. Strip markdown blockquotes (pasted quoted content)
+    .replace(/^>+\s*.*/gm, '')
+    // 8. Strip markdown table rows (pasted tables from bug reports/docs)
+    .replace(/^\s*\|.*\|.*$/gm, '');
 }
 
 const INFORMATIONAL_INTENT_PATTERNS = [

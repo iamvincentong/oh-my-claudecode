@@ -618,6 +618,48 @@ This article argues that fake popularity signals damage trust in open source.`;
         expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
         expect(result.find((r) => r.type === 'autopilot')).toBeUndefined();
       });
+
+      it('should not detect keywords inside markdown blockquotes (pasted transcripts)', () => {
+        const text = `Here's the bug report:
+
+> The ralph loop kept firing even after autopilot was cancelled.
+> This caused ultrawork to restart indefinitely.
+
+What do you think?`;
+        const result = detectKeywordsWithType(text);
+        expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
+        expect(result.find((r) => r.type === 'autopilot')).toBeUndefined();
+        expect(result.find((r) => r.type === 'ultrawork')).toBeUndefined();
+      });
+
+      it('should not detect keywords inside markdown table rows', () => {
+        const text = `Mode comparison:
+
+| Mode | Trigger | Description |
+|------|---------|-------------|
+| ralph | "ralph" | Persistence loop |
+| autopilot | "autopilot" | Full pipeline |
+| ultrawork | "ulw" | Parallel execution |
+
+Which one should we fix first?`;
+        const result = detectKeywordsWithType(text);
+        expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
+        expect(result.find((r) => r.type === 'autopilot')).toBeUndefined();
+        expect(result.find((r) => r.type === 'ultrawork')).toBeUndefined();
+      });
+
+      it('should still detect keywords in plain text outside quotes and tables', () => {
+        const text = `> This is a quoted line about something else
+
+ralph
+
+| Column A | Column B |
+|----------|----------|
+| data     | data     |`;
+        const result = detectKeywordsWithType(text);
+        const ralphMatch = result.find((r) => r.type === 'ralph');
+        expect(ralphMatch).toBeDefined();
+      });
     });
 
     describe('codex keyword', () => {

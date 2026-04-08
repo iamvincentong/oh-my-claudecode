@@ -113,6 +113,10 @@ export function sanitizeForKeywordDetection(text: string): string {
   result = result.replace(/(^|[\s"'`(])(?:\.?\/(?:[\w.-]+\/)*[\w.-]+|(?:[\w.-]+\/)+[\w.-]+\.\w+)/gm, '$1');
   // Remove code blocks (fenced and inline)
   result = removeCodeBlocks(result);
+  // Remove markdown blockquotes (pasted quoted content)
+  result = result.replace(/^>+\s*.*/gm, '');
+  // Remove markdown table rows (pasted tables from bug reports/docs)
+  result = result.replace(/^\s*\|.*\|.*$/gm, '');
   return result;
 }
 
