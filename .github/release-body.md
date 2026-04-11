@@ -1,83 +1,93 @@
-# oh-my-claudecode v4.11.1: add gitStatus working-tree, add hostname element, cwd folder format
+# oh-my-claudecode v4.11.5: Bug Fixes & Release Skill
 
 ## Release Notes
 
-Release with **3 new features**, **8 security improvements**, **33 bug fixes**, **1 other change** across **45 merged PRs**.
-
-### Highlights
-
-- **feat(hud): add gitStatus working-tree indicator element** (#2247)
-- **feat(hud): add hostname element for multi-host SSH workflows** (#2246)
-- **feat(hud): cwd folder format shows parent/leaf instead of just leaf** (#2238)
-- **fix(security): clamp hardMaxIterations and enforce in autopilot** (#2331)
-- **fix(security): delegate gitea URL validation to validateUrlForSSRF** (#2336)
-- **fix(security): enforce disableExternalLLM in omc ask command** (#2324)
+Release with **30+ bug fixes** across **50+ merged PRs** and **1 new feature**.
 
 ### New Features
 
-- **feat(hud): add gitStatus working-tree indicator element** (#2247)
-- **feat(hud): add hostname element for multi-host SSH workflows** (#2246)
-- **feat(hud): cwd folder format shows parent/leaf instead of just leaf** (#2238)
+- **feat(release): rewrite release skill as generic repo-aware assistant** (#2501) — `/oh-my-claudecode:release` now inspects any repo's CI, version files, and release rules on first run and caches them in `.omc/RELEASE_RULE.md`.
 
-### Security & Hardening
+### Highlights
 
-- **fix(security): clamp hardMaxIterations and enforce in autopilot** (#2331)
-- **fix(security): delegate gitea URL validation to validateUrlForSSRF** (#2336)
-- **fix(security): enforce disableExternalLLM in omc ask command** (#2324)
-- **fix(security): sanitize trigger_message control characters before tmux send-keys** (#2323)
-- **fix(security): check iteration directly against hardMax independent of max_iterations** (#2322)
-- **fix(security): reject non-positive hardMaxIterations in strict mode** (#2321)
-- **fix(security): enforce hardMaxIterations for ultrawork persistent mode** (#2320)
-- **fix(security): block all tmux subcommands in worker context** (#2316)
+- **Autopilot/Team stability** — surface hidden dependency stalls before `/autopilot` looks hung; preserve live team workflows when coarse staged state drifts; bound MCP restarts; repair retired team MCP config on upgrade.
+- **Keyword-detector accuracy** — prevent mode activation from quoted reference prose; keep help-style queries informational; preserve activation in mixed command/help prompts.
+- **Ralph robustness** — preserve continuation across interrupted tool turns; silence repeated idle follow-up nudges once backlog is truly zero.
+- **HUD reliability** — prevent setup docs from deleting the installed wrapper; surface import errors; prevent stale root state revival.
+- **Setup/installer correctness** — always update CLAUDE.md on install; avoid hook re-injection for plugin installs; validate and select cache version candidates deterministically.
+- **tmux centralization** — all tmux execution routed through wrapper functions; Windows `.cmd` availability checks aligned; tmux-utils API compatibility restored.
 
 ### Bug Fixes
 
-- **fix(installer): use getPackageDir() instead of __dirname for HUD helper copies** (#2347)
-- **fix(team): lock unregisterMcpWorker and registerInConfig read-modify-write paths** (#2333)
-- **fix(shared-memory): add retry timeout to writeEntry lock acquisition** (#2342)
-- **fix: guard against fd leak in tryAcquireSync on write failure** (#2341)
-- **fix(team): use randomUUID in MCP team-server job ID generation** (#2340)
-- **fix(cancel,team): add skill-active cleanup to bash fallback and guard startTeamV2 events** (#2339)
-- **fix(i18n): prevent Korean keyword false positives for 설명서 and 랄프로렌** (#2337)
-- **fix(state-tools): correct cancel signal path and add legacy fallback** (#2335)
-- **fix: guard Atomics.wait with try/catch in session-registry and subagent-tracker** (#2334)
-- **fix(cancel): write legacy cancel signal to .omc/state/ instead of worktree root** (#2332)
-- **fix(worktree-paths): include dot in project path encoding regex** (#2329)
-- **fix(team): add locking to teamUpdateTask for concurrent safety** (#2330)
-- **fix(hud): apply wrap mode when terminal width is auto-detected** (#2338)
-- **fix(hud): handle ST-terminated OSC 8 sequences in ANSI regex** (#2319)
-- **fix(prompt-prerequisites): use suffix matching for file path comparison** (#2314)
-- **fix(prompt-prerequisites): require path prefix or file extension in isLikelyPath** (#2313)
-- **fix(prompt-prerequisites): move progress recording after blocking check** (#2312)
-- **fix(setup): clean up preserve-mode artifacts on overwrite** (#2298)
-- **fix(launch): mirror keybindings.json and rules/ to runtime config dir** (#2297)
-- **fix(team): sync worker_count after canonicalization dedup** (#2296)
-- **fix(team): skip past colliding worker names in scaleUp** (#2295)
-- **fix(skill-state): add recency check to orchestrator idle bypass** (#2287)
-- **fix(wiki): normalize CRLF in parseFrontmatter for Windows compatibility** (#2285)
-- **fix(wiki): escape newlines in title to prevent frontmatter corruption** (#2284)
-- **fix(wiki): guard writePageUnsafe against reserved filenames** (#2283)
-- **fix(pre-tool-enforcer): strip UTF-8 BOM before frontmatter parsing** (#2276)
-- **fix(wiki): titleToSlug produces bare .md for non-ASCII titles** (#2270)
-- **fix(wiki): keyword search returns 0 results for CJK text** (#2263)
-- **fix(skills): clarify ralph step 7 chaining and ai-slop-cleaner skill invocation** (#2245)
-- **fix(persistent-mode): relax overly-strict ralph/ultrawork session-id check** (#2244)
-- **fix(hud): correctly mark background agents as completed in transcript parser** (#2243)
-- **fix: ignore HTML comments in keyword detector** (#2249)
-- **fix(launch): forward env vars into tmux sessions & respect CLAUDE_CONFIG_DIR** (#2204)
+#### Autopilot / Team
+- Surface hidden dependency stalls before /autopilot looks hung
+- Preserve live team workflows when coarse staged state drifts
+- Bound launcher-backed MCP restarts without changing user intent
+- Repair retired team MCP config on upgrade and launch
+- Prevent stale team worktrees from blocking startup
+- Preserve team state for explicit shutdown instead of terminal auto-cleanup
+- Keep bridge autopilot blocker regression aligned with active-session ownership
+- Prevent autopilot runtime insight from leaking unrelated team blockers
+- Let scale-up workers follow the existing provider launch contract
+- Avoid Claude onboarding on default omc launches
+- Prefer consensus planning blockers over team-stage continuation
+- Back off shipped idle follow-ups once zero backlog is unchanged
+- Collapse duplicate native lifecycle bursts for attached tmux sessions (#2494)
 
-### Other Changes
+#### Keyword Detector / Modes
+- Prevent shipped keyword-detector hooks from re-triggering on explanatory follow-ups
+- Prevent mode activation from quoted reference prose
+- Prevent explanatory mode references from re-triggering orchestration
+- Prevent bundled help-question regexes from collapsing in keyword detection
+- Preserve activation in mixed command/help prompts (#2428)
+- Keep help-style use queries informational (#2428)
+- Prevent stale ralplan terminal states from re-triggering stop enforcement
+- Prevent stale stop-hook state from blocking fresh sessions
+- Silence repeated idle follow-up nudges once backlog is truly zero
 
-- **Make artifact-first handoffs explicit for interop and prompt persistence** (#2257)
+#### Ralph
+- Preserve Ralph continuation across interrupted tool turns
+
+#### HUD
+- Prevent HUD setup docs from deleting the installed wrapper
+- Prevent session-recreated HUD panes from reviving stale root state
+- Surface HUD import errors from plugin root wrapper (#2457)
+- Remove stale inline wrapper from HUD skill, copy from canonical template (#2433)
+- Prevent nested tmux HUD panes from surviving cleanup (#2492)
+
+#### Setup / Installer / Doctor
+- Always update claude config CLAUDE.md on install (#2431)
+- Avoid hook re-injection for plugin installs (#2430)
+- Validate and strictly select cache version candidates (#2422)
+- Prefer latest cache version over stale installed path (#2422)
+- Detect CLAUDE.md version drift against plugin cache (#2423)
+- Support companion version markers and mingw-safe checks (#2423)
+- Use deterministic CLAUDE source for version drift check (#2423)
+- Remove extra brace in version drift command (#2423)
+
+#### tmux / CLI
+- Centralize all tmux execution through wrapper functions (#2427)
+- Keep Windows tmux.cmd execution consistent with availability checks (#2444)
+- Restore tmux-utils API compatibility (#2442)
+- Allow completed ultrawork sessions to exit cleanly (#2439)
+
+#### Hooks / Tools
+- Avoid .json false positive in source extension matching (#2432)
+- Recognize `ty` in the supported Python LSP registry (#2439)
+- Align learned skill templates with flat-file discovery (#2438)
+
+### Documentation
+
+- **docs: add omc symlink bootstrap and .mcp.json conflict resolution to CONTRIBUTING** (#2493)
 
 ### Stats
 
-- **45 PRs merged** | **3 new features** | **33 bug fixes** | **8 security/hardening improvements** | **1 other change**
+- **50+ PRs merged** | **1 new feature** | **30+ bug fixes** | **0 breaking changes**
 
 ### Install / Update
 
 ```bash
-npm install -g oh-my-claude-sisyphus@4.11.1
+npm install -g oh-my-claude-sisyphus@4.11.5
 ```
 
 Or reinstall the plugin:
@@ -85,10 +95,4 @@ Or reinstall the plugin:
 claude /install-plugin oh-my-claudecode
 ```
 
-**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-claudecode/compare/v4.11.0...v4.11.1
-
-## Contributors
-
-Thank you to all contributors who made this release possible!
-
-@pgagarinov @shaun0927 @Yeachan-Heo
+**Full Changelog**: https://github.com/Yeachan-Heo/oh-my-claudecode/compare/v4.11.4...v4.11.5

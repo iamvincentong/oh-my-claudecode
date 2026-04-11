@@ -24,9 +24,10 @@ import {
 } from "fs";
 import { dirname, join } from "path";
 import { resolveToWorktreeRoot, getOmcRoot } from "../lib/worktree-paths.js";
-import { writeModeState } from "../lib/mode-state-io.js";
+import { readModeState, writeModeState } from "../lib/mode-state-io.js";
 import { formatOmcCliInvocation } from "../utils/omc-cli-rendering.js";
 import { createSwallowedErrorLogger } from "../lib/swallowed-error.js";
+import { readCanonicalTeamStateCandidate } from "./team-canonical-state.js";
 
 // Hot-path imports: needed on every/most hook invocations (keyword-detector, pre/post-tool-use)
 import {
@@ -67,6 +68,7 @@ import {
   resolveAutopilotPlanPath,
   resolveOpenQuestionsPlanPath,
 } from "../config/plan-output.js";
+import { formatAutopilotRuntimeInsight } from "./autopilot/runtime-insight.js";
 import { writeSkillActiveState } from "./skill-state/index.js";
 import {
   ULTRAWORK_MESSAGE,
@@ -306,6 +308,46 @@ function activateRalplanState(directory: string, sessionId?: string): void {
   );
 }
 
+function deactivateRalplanState(directory: string, sessionId?: string): void {
+  const state = readModeState<Record<string, unknown>>("ralplan", directory, sessionId);
+  if (!state) {
+    return;
+  }
+
+  const currentPhase =
+    typeof state.current_phase === "string" ? state.current_phase : undefined;
+  const terminalPhases = new Set([
+    "complete",
+    "completed",
+    "failed",
+    "cancelled",
+    "done",
+  ]);
+  const completedAt =
+    typeof state.completed_at === "string"
+      ? state.completed_at
+      : new Date().toISOString();
+
+  writeModeState(
+    "ralplan",
+    {
+      ...state,
+      active: false,
+      current_phase:
+        currentPhase && terminalPhases.has(currentPhase.toLowerCase())
+          ? currentPhase
+          : "complete",
+      completed_at: completedAt,
+      deactivated_reason:
+        typeof state.deactivated_reason === "string"
+          ? state.deactivated_reason
+          : "skill_completed",
+    },
+    directory,
+    sessionId,
+  );
+}
+
 interface TeamStagedState {
   active?: boolean;
   stage?: string;
@@ -341,6 +383,7 @@ function readTeamStagedState(
       ]
     : [join(stateDir, "team-state.json")];
 
+  let coarseState: TeamStagedState | null = null;
   for (const statePath of statePaths) {
     if (!existsSync(statePath)) {
       continue;
@@ -359,13 +402,34 @@ function readTeamStagedState(
         continue;
       }
 
-      return parsed;
+      coarseState = parsed;
+      if (parsed.active === true && !isTeamStateTerminal(parsed)) {
+        return parsed;
+      }
     } catch {
       continue;
     }
   }
 
-  return null;
+  const canonical = readCanonicalTeamStateCandidate(directory, sessionId);
+  if (canonical) {
+    return {
+      active: canonical.active,
+      session_id: canonical.sessionId,
+      team_name: canonical.teamName,
+      stage: canonical.stage,
+      current_stage: canonical.stage,
+      current_phase: canonical.stage,
+      phase: canonical.stage,
+      status: canonical.stage,
+      task: canonical.task,
+      started_at: canonical.startedAt,
+      last_checked_at: canonical.updatedAt,
+      reinforcement_count: 0,
+    };
+  }
+
+  return coarseState;
 }
 
 function getTeamStage(state: TeamStagedState): string {
@@ -737,13 +801,13 @@ async function processKeywordDetector(input: HookInput): Promise<HookOutput> {
 
   // Record prompt submission time in HUD state
   try {
-    const hudState = readHudState(directory) || {
+    const hudState = readHudState(directory, input.sessionId) || {
       timestamp: new Date().toISOString(),
       backgroundTasks: [],
     };
     hudState.lastPromptTimestamp = new Date().toISOString();
     hudState.timestamp = new Date().toISOString();
-    writeHudState(hudState, directory);
+    writeHudState(hudState, directory, input.sessionId);
   } catch {
     // Silent failure - don't break keyword detection
   }
@@ -1084,8 +1148,10 @@ async function processPersistentMode(input: HookInput): Promise<HookOutput> {
         // Per-session cooldown: prevent notification spam when the session idles repeatedly.
         // Uses session-scoped state so one session does not suppress another.
         const stateDir = join(getOmcRoot(directory), "state");
-        if (shouldSendIdleNotification(stateDir, sessionId)) {
-          recordIdleNotificationSent(stateDir, sessionId);
+        const { getIdleNotificationRepoState } = await import("./persistent-mode/idle-repo-state.js");
+        const idleRepoState = getIdleNotificationRepoState(directory);
+        if (shouldSendIdleNotification(stateDir, sessionId, idleRepoState)) {
+          recordIdleNotificationSent(stateDir, sessionId, idleRepoState);
           const logSessionIdleNotifyFailure = createSwallowedErrorLogger(
             'hooks.bridge session-idle notification failed',
           );
@@ -1756,7 +1822,7 @@ function processPreToolUse(input: HookInput): HookOutput {
     if (toolInput?.run_in_background) {
       const config = loadConfig();
       const maxBgTasks = config.permissions?.maxBackgroundTasks ?? 5;
-      const runningCount = getRunningTaskCount(directory);
+      const runningCount = getRunningTaskCount(directory, input.sessionId);
 
       if (runningCount >= maxBgTasks) {
         return {
@@ -1789,6 +1855,7 @@ function processPreToolUse(input: HookInput): HookOutput {
         toolInput.description,
         toolInput.subagent_type,
         directory,
+        input.sessionId,
       );
     }
   }
@@ -1953,6 +2020,9 @@ async function processPostToolUse(input: HookInput): Promise<HookOutput> {
     if (!currentState || !currentState.active || currentState.skill_name === completingSkill) {
       clearSkillActiveState(directory, input.sessionId);
     }
+    if (isConsensusPlanningSkillInvocation(skillName, input.toolInput)) {
+      deactivateRalplanState(directory, input.sessionId);
+    }
   }
 
   // Run orchestrator post-tool processing (remember tags, verification reminders, etc.)
@@ -1988,25 +2058,27 @@ async function processPostToolUse(input: HookInput): Promise<HookOutput> {
 
     if (asyncAgentId) {
       if (toolUseId) {
-        remapBackgroundTaskId(toolUseId, asyncAgentId, directory);
+        remapBackgroundTaskId(toolUseId, asyncAgentId, directory, input.sessionId);
       } else if (description) {
         remapMostRecentMatchingBackgroundTaskId(
           description,
           asyncAgentId,
           directory,
           agentType,
+          input.sessionId,
         );
       }
     } else {
       const failed = taskLaunchDidFail(input.toolOutput);
       if (toolUseId) {
-        completeBackgroundTask(toolUseId, directory, failed);
+        completeBackgroundTask(toolUseId, directory, failed, input.sessionId);
       } else if (description) {
         completeMostRecentMatchingBackgroundTask(
           description,
           directory,
           failed,
           agentType,
+          input.sessionId,
         );
       }
     }
@@ -2023,12 +2095,13 @@ async function processPostToolUse(input: HookInput): Promise<HookOutput> {
   if (input.toolName === "TaskOutput") {
     const taskOutput = parseTaskOutputLifecycle(input.toolOutput);
     if (taskOutput) {
-      completeBackgroundTask(
-        taskOutput.taskId,
-        directory,
-        taskOutputDidFail(taskOutput.status),
-      );
-    }
+    completeBackgroundTask(
+      taskOutput.taskId,
+      directory,
+      taskOutputDidFail(taskOutput.status),
+      input.sessionId,
+    );
+  }
   }
 
   // Wake OpenClaw gateway for post-tool-use (non-blocking, fires for all tools).
@@ -2080,11 +2153,13 @@ async function processAutopilot(input: HookInput): Promise<HookOutput> {
   };
 
   const phasePrompt = getPhasePrompt(state.phase, context);
+  const runtimeInsight = formatAutopilotRuntimeInsight(directory, input.sessionId);
 
-  if (phasePrompt) {
+  if (phasePrompt || runtimeInsight) {
+    const detailParts = [runtimeInsight, phasePrompt].filter(Boolean);
     return {
       continue: true,
-      message: `[AUTOPILOT - Phase: ${state.phase.toUpperCase()}]\n\n${phasePrompt}`,
+      message: `[AUTOPILOT - Phase: ${state.phase.toUpperCase()}]\n\n${detailParts.join("\n\n")}`,
     };
   }
 

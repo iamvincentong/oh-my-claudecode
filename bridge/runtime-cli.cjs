@@ -2538,6 +2538,9 @@ function isPromptModeAgent(agentType) {
   return !!contract.supportsPromptMode;
 }
 function resolveClaudeWorkerModel(env = process.env) {
+  if (env.OMC_ROUTING_FORCE_INHERIT === "true") {
+    return void 0;
+  }
   if (!isBedrock() && !isVertexAI()) {
     return void 0;
   }
@@ -2869,10 +2872,16 @@ function safeRealpath(p) {
   try {
     return (0, import_fs7.realpathSync)(p);
   } catch {
-    const parent = (0, import_path10.dirname)(p);
-    const name = (0, import_path10.basename)(p);
+    const segments = [];
+    let current = (0, import_path10.resolve)(p);
+    while (!(0, import_fs7.existsSync)(current)) {
+      segments.unshift((0, import_path10.basename)(current));
+      const parent = (0, import_path10.dirname)(current);
+      if (parent === current) break;
+      current = parent;
+    }
     try {
-      return (0, import_path10.resolve)((0, import_fs7.realpathSync)(parent), name);
+      return (0, import_path10.join)((0, import_fs7.realpathSync)(current), ...segments);
     } catch {
       return (0, import_path10.resolve)(p);
     }

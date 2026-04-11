@@ -12,6 +12,26 @@ import { tmpdir } from 'os';
 import { execFileSync } from 'child_process';
 import { processHook, resetSkipHooksCache, requiredKeysForHook, } from '../bridge.js';
 import { flushPendingWrites } from '../subagent-tracker/index.js';
+function writeCanonicalTeamState(tempDir, sessionId, teamName, phase) {
+    const canonicalTeamDir = join(tempDir, '.omc', 'state', 'team', teamName);
+    mkdirSync(canonicalTeamDir, { recursive: true });
+    writeFileSync(join(canonicalTeamDir, 'manifest.json'), JSON.stringify({
+        name: teamName,
+        task: `${teamName} task`,
+        leader: {
+            session_id: sessionId,
+            worker_id: 'leader-fixed',
+            role: 'leader',
+        },
+        created_at: new Date().toISOString(),
+        leader_cwd: tempDir,
+        team_state_root: join(tempDir, '.omc', 'state'),
+    }, null, 2));
+    writeFileSync(join(canonicalTeamDir, 'phase-state.json'), JSON.stringify({
+        current_phase: phase,
+        updated_at: new Date().toISOString(),
+    }, null, 2));
+}
 // ============================================================================
 // Hook Routing Tests
 // ============================================================================
@@ -250,6 +270,32 @@ Read src/hooks/bridge.ts first.`,
                 rmSync(tempDir, { recursive: true, force: true });
             }
         });
+        it('does not activate ultrawork state for explanatory reference follow-up prose', async () => {
+            const tempDir = mkdtempSync(join(tmpdir(), 'bridge-routing-keyword-reference-'));
+            try {
+                execFileSync('git', ['init'], { cwd: tempDir, stdio: 'pipe' });
+                const sessionId = 'keyword-reference-session';
+                const keywordResult = await processHook('keyword-detector', {
+                    sessionId,
+                    prompt: 'OMC Ultrawork = "special ops". how much would it cost?',
+                    directory: tempDir,
+                });
+                expect(keywordResult.continue).toBe(true);
+                expect(keywordResult.message).toBeUndefined();
+                const sessionDir = join(tempDir, '.omc', 'state', 'sessions', sessionId);
+                expect(existsSync(join(sessionDir, 'ultrawork-state.json'))).toBe(false);
+                const stopResult = await processHook('persistent-mode', {
+                    sessionId,
+                    directory: tempDir,
+                    stop_reason: 'end_turn',
+                });
+                expect(stopResult.continue).toBe(true);
+                expect(stopResult.message).toBeUndefined();
+            }
+            finally {
+                rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
         it('should activate ralph and linked ultrawork when Skill tool invokes ralph', async () => {
             const tempDir = mkdtempSync(join(tmpdir(), 'bridge-routing-ralph-'));
             try {
@@ -379,6 +425,43 @@ Read src/hooks/bridge.ts first.`,
                 rmSync(tempDir, { recursive: true, force: true });
             }
         });
+        it('deactivates ralplan state when the consensus planning skill completes', async () => {
+            const tempDir = mkdtempSync(join(tmpdir(), 'bridge-routing-ralplan-complete-'));
+            try {
+                execFileSync('git', ['init'], { cwd: tempDir, stdio: 'pipe' });
+                const sessionId = 'ralplan-complete-session';
+                await processHook('pre-tool-use', {
+                    sessionId,
+                    toolName: 'Skill',
+                    toolInput: { skill: 'oh-my-claudecode:ralplan' },
+                    directory: tempDir,
+                });
+                const postResult = await processHook('post-tool-use', {
+                    sessionId,
+                    toolName: 'Skill',
+                    toolInput: { skill: 'oh-my-claudecode:ralplan' },
+                    toolOutput: { ok: true },
+                    directory: tempDir,
+                });
+                expect(postResult.continue).toBe(true);
+                const ralplanPath = join(tempDir, '.omc', 'state', 'sessions', sessionId, 'ralplan-state.json');
+                const ralplanState = JSON.parse(readFileSync(ralplanPath, 'utf-8'));
+                expect(ralplanState.active).toBe(false);
+                expect(ralplanState.current_phase).toBe('complete');
+                expect(ralplanState.deactivated_reason).toBe('skill_completed');
+                expect(typeof ralplanState.completed_at).toBe('string');
+                const stopResult = await processHook('persistent-mode', {
+                    sessionId,
+                    directory: tempDir,
+                    stop_reason: 'end_turn',
+                });
+                expect(stopResult.continue).toBe(true);
+                expect(stopResult.message).toBeUndefined();
+            }
+            finally {
+                rmSync(tempDir, { recursive: true, force: true });
+            }
+        });
         it('should handle session-start and return continue:true', async () => {
             const input = {
                 sessionId: 'test-session',
@@ -386,6 +469,24 @@ Read src/hooks/bridge.ts first.`,
             };
             const result = await processHook('session-start', input);
             expect(result.continue).toBe(true);
+        });
+        it('should restore canonical team context when coarse team-state drifts away', async () => {
+            const tempDir = process.cwd();
+            const sessionId = 'canonical-team-session';
+            const canonicalTeamDir = join(tempDir, '.omc', 'state', 'team', 'canonical-team');
+            try {
+                writeCanonicalTeamState(tempDir, sessionId, 'canonical-team', 'executing');
+                const result = await processHook('session-start', {
+                    sessionId,
+                    directory: tempDir,
+                });
+                expect(result.continue).toBe(true);
+                expect(result.message).toContain('[TEAM MODE RESTORED]');
+                expect(result.message).toContain('canonical-team');
+            }
+            finally {
+                rmSync(canonicalTeamDir, { recursive: true, force: true });
+            }
         });
         it('should handle stop-continuation and always return continue:true', async () => {
             const input = {
@@ -804,6 +905,45 @@ Read src/hooks/bridge.ts first.`,
             const result = await processHook('autopilot', input);
             expect(result.continue).toBe(true);
             spy.mockRestore();
+        });
+        it('surfaces blocker details in autopilot hook output', async () => {
+            const testDir = process.cwd();
+            try {
+                const sessionId = 'autopilot-blockers-session';
+                const sessionDir = join(testDir, '.omc', 'state', 'sessions', sessionId);
+                const teamRoot = join(testDir, '.omc', 'state', 'team', 'bridge-autopilot-demo-team');
+                mkdirSync(sessionDir, { recursive: true });
+                mkdirSync(join(teamRoot, 'tasks'), { recursive: true });
+                writeFileSync(join(sessionDir, 'autopilot-state.json'), JSON.stringify({
+                    active: true,
+                    phase: 'planning',
+                    session_id: sessionId,
+                    originalIdea: 'demo task',
+                    expansion: { spec_path: null },
+                    planning: { plan_path: null },
+                }, null, 2));
+                writeFileSync(join(teamRoot, 'tasks', '1.json'), JSON.stringify({
+                    id: '1',
+                    subject: 'Blocked task',
+                    description: 'Depends on missing task 13',
+                    status: 'pending',
+                    owner: 'worker-1',
+                    blocked_by: ['13'],
+                    depends_on: ['13'],
+                    created_at: new Date().toISOString(),
+                }, null, 2));
+                const result = await processHook('autopilot', {
+                    sessionId,
+                    directory: testDir,
+                });
+                expect(result.continue).toBe(true);
+                expect(result.message).toContain('[AUTOPILOT - Phase: PLANNING]');
+                expect(result.message).toContain('[bridge-autopilot-demo-team] task-1 depends on missing task ids [13]');
+            }
+            finally {
+                rmSync(join(testDir, '.omc', 'state', 'sessions', 'autopilot-blockers-session'), { recursive: true, force: true });
+                rmSync(join(testDir, '.omc', 'state', 'team', 'bridge-autopilot-demo-team'), { recursive: true, force: true });
+            }
         });
     });
     // --------------------------------------------------------------------------

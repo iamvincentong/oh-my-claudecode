@@ -828,20 +828,30 @@ export function hasEnabledOmcPlugin(): boolean {
 
   try {
     const settings = JSON.parse(readFileSync(SETTINGS_FILE, 'utf-8')) as {
+      // Modern Claude Code 1.x format. The canonical field name.
+      enabledPlugins?: unknown;
+      // Legacy field name kept for backward compatibility with older
+      // Claude Code installs that wrote `plugins` instead of `enabledPlugins`.
       plugins?: unknown;
     };
-    const plugins = settings.plugins;
 
-    if (Array.isArray(plugins)) {
-      return plugins.some(plugin =>
-        typeof plugin === 'string' && plugin.toLowerCase().includes('oh-my-claudecode')
-      );
-    }
-
-    if (plugins && typeof plugins === 'object') {
-      return Object.entries(plugins as Record<string, unknown>).some(([pluginId, value]) =>
-        pluginId.toLowerCase().includes('oh-my-claudecode') && value !== false
-      );
+    // Prefer `enabledPlugins` (modern), fall back to `plugins` (legacy).
+    // Returning on the first hit short-circuits the check whenever we find
+    // an enabled OMC plugin entry in either field.
+    for (const candidate of [settings.enabledPlugins, settings.plugins]) {
+      if (Array.isArray(candidate)) {
+        if (candidate.some(plugin =>
+          typeof plugin === 'string' && plugin.toLowerCase().includes('oh-my-claudecode')
+        )) {
+          return true;
+        }
+      } else if (candidate && typeof candidate === 'object') {
+        if (Object.entries(candidate as Record<string, unknown>).some(([pluginId, value]) =>
+          pluginId.toLowerCase().includes('oh-my-claudecode') && value !== false
+        )) {
+          return true;
+        }
+      }
     }
   } catch {
     // Ignore unreadable settings and treat plugin mode as disabled.
@@ -1363,36 +1373,30 @@ export function install(options: InstallOptions = {}): InstallResult {
     // Skipped only for project-scoped plugins to avoid mutating global config.
     if (!projectScoped) {
       const claudeMdPath = join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
-      const homeMdPath = join(homedir(), 'CLAUDE.md');
+      const omcContent = loadClaudeMdContent();
 
-      if (!existsSync(homeMdPath)) {
-        const omcContent = loadClaudeMdContent();
+      // Read existing content if it exists
+      let existingContent: string | null = null;
+      if (existsSync(claudeMdPath)) {
+        existingContent = readFileSync(claudeMdPath, 'utf-8');
+      }
 
-        // Read existing content if it exists
-        let existingContent: string | null = null;
-        if (existsSync(claudeMdPath)) {
-          existingContent = readFileSync(claudeMdPath, 'utf-8');
-        }
+      // Always create backup before modification (if file exists)
+      if (existingContent !== null) {
+        const timestamp = new Date().toISOString().replace(/:/g, '-').split('.')[0]; // YYYY-MM-DDTHH-MM-SS
+        const backupPath = join(CLAUDE_CONFIG_DIR, `CLAUDE.md.backup.${timestamp}`);
+        writeFileSync(backupPath, existingContent);
+        log(`Backed up existing CLAUDE.md to ${backupPath}`);
+      }
 
-        // Always create backup before modification (if file exists)
-        if (existingContent !== null) {
-          const timestamp = new Date().toISOString().replace(/:/g, '-').split('.')[0]; // YYYY-MM-DDTHH-MM-SS
-          const backupPath = join(CLAUDE_CONFIG_DIR, `CLAUDE.md.backup.${timestamp}`);
-          writeFileSync(backupPath, existingContent);
-          log(`Backed up existing CLAUDE.md to ${backupPath}`);
-        }
+      // Merge OMC content with existing content
+      const mergedContent = mergeClaudeMd(existingContent, omcContent, targetVersion);
+      writeFileSync(claudeMdPath, mergedContent);
 
-        // Merge OMC content with existing content
-        const mergedContent = mergeClaudeMd(existingContent, omcContent, targetVersion);
-        writeFileSync(claudeMdPath, mergedContent);
-
-        if (existingContent) {
-          log('Updated CLAUDE.md (merged with existing content)');
-        } else {
-          log('Created CLAUDE.md');
-        }
+      if (existingContent) {
+        log('Updated CLAUDE.md (merged with existing content)');
       } else {
-        log('CLAUDE.md exists in home directory, skipping');
+        log('Created CLAUDE.md');
       }
     }
 
