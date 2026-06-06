@@ -664,6 +664,45 @@ This article argues that fake popularity signals damage trust in open source.`;
                 expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
                 expect(result.find((r) => r.type === 'autopilot')).toBeUndefined();
             });
+            it('should not detect keywords inside markdown blockquotes (pasted transcripts)', () => {
+                const text = `Here's the bug report:
+
+> The ralph loop kept firing even after autopilot was cancelled.
+> This caused ultrawork to restart indefinitely.
+
+What do you think?`;
+                const result = detectKeywordsWithType(text);
+                expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
+                expect(result.find((r) => r.type === 'autopilot')).toBeUndefined();
+                expect(result.find((r) => r.type === 'ultrawork')).toBeUndefined();
+            });
+            it('should not detect keywords inside markdown table rows', () => {
+                const text = `Mode comparison:
+
+| Mode | Trigger | Description |
+|------|---------|-------------|
+| ralph | "ralph" | Persistence loop |
+| autopilot | "autopilot" | Full pipeline |
+| ultrawork | "ulw" | Parallel execution |
+
+Which one should we fix first?`;
+                const result = detectKeywordsWithType(text);
+                expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
+                expect(result.find((r) => r.type === 'autopilot')).toBeUndefined();
+                expect(result.find((r) => r.type === 'ultrawork')).toBeUndefined();
+            });
+            it('should still detect keywords in plain text outside quotes and tables', () => {
+                const text = `> This is a quoted line about something else
+
+ralph
+
+| Column A | Column B |
+|----------|----------|
+| data     | data     |`;
+                const result = detectKeywordsWithType(text);
+                const ralphMatch = result.find((r) => r.type === 'ralph');
+                expect(ralphMatch).toBeDefined();
+            });
         });
         describe('codex keyword', () => {
             it('should detect "ask codex"', () => {
@@ -1752,6 +1791,118 @@ This article argues that fake popularity signals damage trust in open source.`;
             it('hasKeyword("오토파일럿") should be true', () => {
                 expect(hasKeyword('오토파일럿')).toBe(true);
             });
+        });
+    });
+    // Japanese full-width katakana variants mirror the existing Korean (Hangul)
+    // alternates in KEYWORD_PATTERNS exactly: raw match, no \b word boundary
+    // (ASCII-only), negative lookahead for the Ralph Lauren collision. Half-width
+    // katakana (ﾗﾙﾌ) is intentionally unsupported — full-width only, no NFKC.
+    describe('Japanese katakana triggers', () => {
+        it('should detect "ラルフ 起動" as ralph', () => {
+            const result = detectKeywordsWithType('ラルフ 起動');
+            const match = result.find((r) => r.type === 'ralph');
+            expect(match).toBeDefined();
+        });
+        it('should detect "オートパイロットで実装して" as autopilot', () => {
+            const result = detectKeywordsWithType('オートパイロットで実装して');
+            const match = result.find((r) => r.type === 'autopilot');
+            expect(match).toBeDefined();
+        });
+        it('should detect "ウルトラワークで並列実行して" as ultrawork', () => {
+            const result = detectKeywordsWithType('ウルトラワークで並列実行して');
+            const match = result.find((r) => r.type === 'ultrawork');
+            expect(match).toBeDefined();
+        });
+        it('should detect "ウルトラシンクで設計して" as ultrathink', () => {
+            const result = detectKeywordsWithType('ウルトラシンクで設計して');
+            const match = result.find((r) => r.type === 'ultrathink');
+            expect(match).toBeDefined();
+        });
+        // ralplan routes through the explicit-invocation gate. A bare keyword at
+        // position 0 has an empty prefix, which counts as a direct invocation —
+        // identical to bare Korean "랄플랜" (see the Korean basic-matching block).
+        it('should detect bare "ラルプラン" as ralplan (parity with bare "랄플랜")', () => {
+            const result = detectKeywordsWithType('ラルプラン');
+            const match = result.find((r) => r.type === 'ralplan');
+            expect(match).toBeDefined();
+        });
+        it('should NOT detect "ラルフローレンのシャツ" as ralph (Ralph Lauren)', () => {
+            const result = detectKeywordsWithType('ラルフローレンのシャツ');
+            const match = result.find((r) => r.type === 'ralph');
+            expect(match).toBeUndefined();
+        });
+        it('should NOT detect "ラルフ・ローレンについて" as ralph (nakaguro Ralph Lauren)', () => {
+            const result = detectKeywordsWithType('ラルフ・ローレンについて');
+            const match = result.find((r) => r.type === 'ralph');
+            expect(match).toBeUndefined();
+        });
+        it('should NOT detect informational "ラルフ とは？ 使い方を教えて"', () => {
+            const result = detectKeywordsWithType('ラルフ とは？ 使い方を教えて');
+            expect(result).toEqual([]);
+        });
+        it.each([
+            ['ウルトラワークについて教えて', 'ultrawork'],
+            ['オートパイロットについて教えて', 'autopilot'],
+            ['ラルフについて教えて', 'ralph'],
+        ])('should NOT detect informational "%s" as %s', (prompt, type) => {
+            const result = detectKeywordsWithType(prompt);
+            expect(result.find((r) => r.type === type)).toBeUndefined();
+        });
+        it('should detect Japanese ralph execution request that asks for the result', () => {
+            const result = detectKeywordsWithType('ラルフを実行して結果を教えて');
+            expect(result.find((r) => r.type === 'ralph')).toBeDefined();
+        });
+        // Japanese diagnostic/complaint prompts must not fire execution modes,
+        // mirroring the Korean 자꾸/계속 suppression.
+        it('should NOT detect ralph for complaint "ラルフ、また失敗した"', () => {
+            const result = detectKeywordsWithType('ラルフ、また失敗した');
+            expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
+        });
+        it('should NOT detect ralph for complaint "ラルフが何度も再実行されて困る"', () => {
+            const result = detectKeywordsWithType('ラルフが何度も再実行されて困る');
+            expect(result.find((r) => r.type === 'ralph')).toBeUndefined();
+        });
+        // P2 removed for Korean parity — Korean does not suppress adverb-less complaints either.
+        // See follow-up: language-agnostic topic/subject-particle complaint pattern.
+        it('should now activate ultrawork for adverb-less "ウルトラワークがループしてる" (P2 removed, Korean parity)', () => {
+            const result = detectKeywordsWithType('ウルトラワークがループしてる');
+            expect(result.find((r) => r.type === 'ultrawork')).toBeDefined();
+        });
+        // P2 removed for Korean parity — Korean does not suppress adverb-less complaints either.
+        // See follow-up: language-agnostic topic/subject-particle complaint pattern.
+        it('should now activate ralph for adverb-less "ラルフは失敗しやすい" (P2 removed, Korean parity)', () => {
+            const result = detectKeywordsWithType('ラルフは失敗しやすい');
+            expect(result.find((r) => r.type === 'ralph')).toBeDefined();
+        });
+        // Regression guard: legitimate activations must still fire.
+        it('should STILL detect ralph for "ラルフ 起動" (regression)', () => {
+            const result = detectKeywordsWithType('ラルフ 起動');
+            expect(result.find((r) => r.type === 'ralph')).toBeDefined();
+        });
+        it('should STILL detect ralph for "ラルフで認証バグを直して" (regression)', () => {
+            const result = detectKeywordsWithType('ラルフで認証バグを直して');
+            expect(result.find((r) => r.type === 'ralph')).toBeDefined();
+        });
+        // Work-request still activates (representative guard; the P2 escape was removed for Korean parity).
+        it('should STILL detect ralph for work-request "ラルフは無限ループ検出機能を実装して"', () => {
+            const result = detectKeywordsWithType('ラルフは無限ループ検出機能を実装して');
+            expect(result.find((r) => r.type === 'ralph')).toBeDefined();
+        });
+        // Half-width katakana is unsupported by design (full-width only, no NFKC).
+        it('should NOT detect half-width "ﾗﾙﾌ 起動" as ralph (unsupported boundary)', () => {
+            const result = detectKeywordsWithType('ﾗﾙﾌ 起動');
+            const match = result.find((r) => r.type === 'ralph');
+            expect(match).toBeUndefined();
+        });
+        it('should NOT detect "私たちのチームはリリースした" as team (common word)', () => {
+            const result = detectKeywordsWithType('私たちのチームはリリースした');
+            const match = result.find((r) => r.type === 'team');
+            expect(match).toBeUndefined();
+        });
+        it('should NOT detect "チームで作業" as team (common word)', () => {
+            const result = detectKeywordsWithType('チームで作業');
+            const match = result.find((r) => r.type === 'team');
+            expect(match).toBeUndefined();
         });
     });
     // -------------------------------------------------------------------------
