@@ -15,6 +15,7 @@ import { spawn, execSync, ChildProcess } from "child_process";
 import { existsSync, openSync, readSync, closeSync } from "fs";
 import { join } from "path";
 import { writeFileWithMode, ensureDirWithMode } from "./fs-utils.js";
+import { getOmcRoot } from "../lib/worktree-paths.js";
 import type {
   BridgeConfig,
   TaskFile,
@@ -42,6 +43,7 @@ import {
   findPermissionViolations,
 } from "./permissions.js";
 import { getBuiltinExternalDefaultModel } from "../config/models.js";
+import { sanitizePromptContent as sanitizeSharedPromptContent } from "../agents/prompt-helpers.js";
 import type { WorkerPermissions, PermissionViolation } from "./permissions.js";
 import { getTeamStatus } from "./team-status.js";
 import { measureCharCounts, recordTaskUsage } from "./usage-tracker.js";
@@ -212,21 +214,7 @@ export function sanitizePromptContent(
   content: string,
   maxLength: number,
 ): string {
-  let sanitized =
-    content.length > maxLength ? content.slice(0, maxLength) : content;
-  // If truncation split a surrogate pair, remove the dangling high surrogate
-  if (sanitized.length > 0) {
-    const lastCode = sanitized.charCodeAt(sanitized.length - 1);
-    if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
-      sanitized = sanitized.slice(0, -1);
-    }
-  }
-  // Escape XML-like tags that match our prompt delimiters (including tags with attributes)
-  sanitized = sanitized.replace(/<(\/?)(TASK_SUBJECT)[^>]*>/gi, "[$1$2]");
-  sanitized = sanitized.replace(/<(\/?)(TASK_DESCRIPTION)[^>]*>/gi, "[$1$2]");
-  sanitized = sanitized.replace(/<(\/?)(INBOX_MESSAGE)[^>]*>/gi, "[$1$2]");
-  sanitized = sanitized.replace(/<(\/?)(INSTRUCTIONS)[^>]*>/gi, "[$1$2]");
-  return sanitized;
+  return sanitizeSharedPromptContent(content, maxLength);
 }
 
 /** Format the prompt template with sanitized content */
@@ -335,7 +323,7 @@ function writePromptFile(
   taskId: string,
   prompt: string,
 ): string {
-  const dir = join(config.workingDirectory, ".omc", "prompts");
+  const dir = join(getOmcRoot(config.workingDirectory), "prompts");
   ensureDirWithMode(dir);
   const filename = `team-${config.teamName}-task-${taskId}-${Date.now()}.md`;
   const filePath = join(dir, filename);
@@ -345,7 +333,7 @@ function writePromptFile(
 
 /** Get output file path for a task */
 function getOutputPath(config: BridgeConfig, taskId: string): string {
-  const dir = join(config.workingDirectory, ".omc", "outputs");
+  const dir = join(getOmcRoot(config.workingDirectory), "outputs");
   ensureDirWithMode(dir);
   const suffix = Math.random().toString(36).slice(2, 8);
   return join(

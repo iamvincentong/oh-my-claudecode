@@ -7,7 +7,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/Yeachan-Heo/oh-my-claudecode?style=flat&color=yellow)](https://github.com/Yeachan-Heo/oh-my-claudecode/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
-[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
+[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/sj4exxQ9v)
 
 > **Codex 사용자분들께:** [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex)를 확인해보세요 — OpenAI Codex CLI를 위한 동일한 오케스트레이션 경험을 제공합니다.
 
@@ -15,7 +15,7 @@
 
 *Claude Code를 배우지 마세요. 그냥 OMC를 쓰세요.*
 
-[시작하기](#빠른-시작) • [문서](https://yeachan-heo.github.io/oh-my-claudecode-website) • [CLI 레퍼런스](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#cli-reference) • [워크플로우](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#workflows) • [마이그레이션 가이드](docs/MIGRATION.md)
+[시작하기](#빠른-시작) • [문서](https://yeachan-heo.github.io/oh-my-claudecode-website) • [CLI 레퍼런스](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference) • [워크플로우](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows) • [마이그레이션 가이드](docs/MIGRATION.md) • [Discord](https://discord.gg/sj4exxQ9v)
 
 ---
 
@@ -150,7 +150,7 @@ omc team shutdown auth-review
 ## 기능
 
 ### 실행 모드
-다양한 사용 사례를 위한 여러 전략 - 완전 자율 빌드부터 토큰 효율적인 리팩토링까지. [자세히 보기 →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#execution-modes)
+다양한 사용 사례를 위한 여러 전략 - 완전 자율 빌드부터 토큰 효율적인 리팩토링까지. [자세히 보기 →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#execution-modes)
 
 | 모드 | 특징 | 용도 |
 |------|---------|---------|
@@ -207,7 +207,7 @@ server.py:42의 핸들러를 try/except ClientDisconnectedError로 감싸세요.
 ```
 
 **스킬 관리:** `/skill list | add | remove | edit | search`
-**자동 학습:** `/learner`가 엄격한 품질 기준으로 재사용 가능한 패턴을 추출합니다
+**자동 학습:** `/skillify`가 엄격한 품질 기준으로 재사용 가능한 패턴을 추출합니다
 **자동 주입:** 매칭되는 스킬이 컨텍스트에 자동으로 로드됩니다 — 수동 호출 불필요
 
 [전체 기능 목록 →](docs/REFERENCE.md)
@@ -340,10 +340,10 @@ OpenClaw 페이로드를 ClawdBot을 통해 Discord에 전달하는 레퍼런스
 ## 문서
 
 - **[전체 레퍼런스](docs/REFERENCE.md)** - 완전한 기능 문서
-- **[CLI 레퍼런스](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#cli-reference)** - 모든 `omc` 명령어, 플래그 및 도구
-- **[알림 가이드](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#notifications)** - Discord, Telegram, Slack 및 webhook 설정
-- **[추천 워크플로우](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#workflows)** - 일반 작업을 위한 검증된 스킬 체인
-- **[릴리스 노트](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#release-notes)** - 각 버전의 새로운 기능
+- **[CLI 레퍼런스](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference)** - 모든 `omc` 명령어, 플래그 및 도구
+- **[알림 가이드](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#notifications)** - Discord, Telegram, Slack 및 webhook 설정
+- **[추천 워크플로우](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows)** - 일반 작업을 위한 검증된 스킬 체인
+- **[릴리스 노트](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#release-notes)** - 각 버전의 새로운 기능
 - **[웹사이트](https://yeachan-heo.github.io/oh-my-claudecode-website)** - 인터랙티브 가이드와 예제
 - **[마이그레이션 가이드](docs/MIGRATION.md)** - v2.x에서 업그레이드
 - **[아키텍처](docs/ARCHITECTURE.md)** - 내부 작동 원리

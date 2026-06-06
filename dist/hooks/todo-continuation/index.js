@@ -22,7 +22,7 @@ function debugLog(message, ...args) {
         console.error('[todo-continuation]', message, ...args);
     }
 }
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { getOmcRoot } from '../../lib/worktree-paths.js';
 import { getClaudeConfigDir } from '../../utils/config-dir.js';
@@ -57,6 +57,109 @@ function getStopReasonFields(context) {
         .filter((value) => typeof value === 'string' && value.trim().length > 0)
         .map((value) => value.toLowerCase().replace(/[\s-]+/g, '_'));
 }
+const STOP_CONTEXT_TAIL_BYTES = 32 * 1024;
+const STOP_CONTEXT_VALUE_MAX_CHARS = 8 * 1024;
+const TOOL_RESULT_FILE_POINTER_PATTERN = /(?:^|[\s"'`(\[{<])(?:\.{0,2}\/)?tool-results\/[A-Za-z0-9._-]+\.txt(?:$|[\s"'`)\]}>:,.])/i;
+const TOOL_RESULT_REDIRECT_MARKER_PATTERNS = [
+    /\btool[_ -]?result\b.{0,160}\b(?:too large|oversi[sz]e[dt]?|exceeds?|exceeded|truncated|redirect(?:ed)?|saved|written)\b/i,
+    /\b(?:too large|oversi[sz]e[dt]?|exceeds?|exceeded|truncated|redirect(?:ed)?|saved|written)\b.{0,160}\btool[_ -]?result\b/i,
+    /\b(?:output|response|result)\b.{0,160}\b(?:redirect(?:ed)?|saved|written)\b.{0,160}\btool-results\/[A-Za-z0-9._-]+\.txt\b/i,
+    /\bfull (?:tool )?(?:output|result|response)\b.{0,160}\btool-results\/[A-Za-z0-9._-]+\.txt\b/i,
+];
+function stringifyContextValue(value) {
+    if (typeof value === 'string') {
+        return value;
+    }
+    if (value == null) {
+        return '';
+    }
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return String(value);
+    }
+}
+function appendBoundedText(parts, value) {
+    const text = stringifyContextValue(value);
+    if (!text)
+        return;
+    parts.push(text.length > STOP_CONTEXT_VALUE_MAX_CHARS
+        ? text.slice(-STOP_CONTEXT_VALUE_MAX_CHARS)
+        : text);
+}
+function readStopTranscriptTail(transcriptPath) {
+    const size = statSync(transcriptPath).size;
+    if (size <= STOP_CONTEXT_TAIL_BYTES) {
+        return readFileSync(transcriptPath, 'utf-8');
+    }
+    const fd = openSync(transcriptPath, 'r');
+    try {
+        const offset = size - STOP_CONTEXT_TAIL_BYTES;
+        const buf = Buffer.allocUnsafe(STOP_CONTEXT_TAIL_BYTES);
+        const bytesRead = readSync(fd, buf, 0, STOP_CONTEXT_TAIL_BYTES, offset);
+        return buf.subarray(0, bytesRead).toString('utf-8');
+    }
+    finally {
+        closeSync(fd);
+    }
+}
+function extractLatestTranscriptEventText(transcriptTail) {
+    const lines = transcriptTail
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index];
+        try {
+            const parsed = JSON.parse(line);
+            const text = stringifyContextValue(parsed);
+            if (text)
+                return text;
+        }
+        catch {
+            if (line)
+                return line;
+        }
+    }
+    return '';
+}
+function getOversizeStopEvidence(context) {
+    if (!context)
+        return '';
+    const parts = [];
+    appendBoundedText(parts, context.message);
+    appendBoundedText(parts, context.output);
+    appendBoundedText(parts, context.response);
+    appendBoundedText(parts, context.text);
+    appendBoundedText(parts, context.content);
+    appendBoundedText(parts, context.tool_input ?? context.toolInput);
+    const transcriptPath = context.transcript_path ?? context.transcriptPath;
+    if (transcriptPath && existsSync(transcriptPath)) {
+        try {
+            appendBoundedText(parts, extractLatestTranscriptEventText(readStopTranscriptTail(transcriptPath)));
+        }
+        catch {
+            // Best-effort classifier only; unreadable transcript should not affect
+            // the existing stop behavior.
+        }
+    }
+    return parts.join('\n');
+}
+/**
+ * Detect Stop events that are not actual user/task stalls, but the synthetic
+ * turn boundary Claude Code emits after an oversized tool result is redirected
+ * to a `tool-results/*.txt` file pointer.
+ */
+export function isOversizeToolResultRedirectStop(context) {
+    const evidence = getOversizeStopEvidence(context);
+    if (!evidence)
+        return false;
+    const hasToolResultPointer = TOOL_RESULT_FILE_POINTER_PATTERN.test(evidence);
+    if (!hasToolResultPointer)
+        return false;
+    return TOOL_RESULT_REDIRECT_MARKER_PATTERNS.some((pattern) => pattern.test(evidence));
+}
 /**
  * Detect if stop was due to user abort (not natural completion)
  *
@@ -67,7 +170,13 @@ function getStopReasonFields(context) {
  * - user_cancel, user_interrupt: Likely user-initiated via UI
  * - ctrl_c: Terminal interrupt (Ctrl+C)
  * - manual_stop: Explicit stop button
- * - abort, cancel, interrupt: Generic abort patterns
+ * - abort, cancel: Generic abort patterns
+ *
+ * Plain `interrupt` is intentionally NOT treated as an explicit user abort.
+ * In practice it can also describe a turn interruption caused by a new user
+ * message arriving during long-running tool execution (issue #2478). Those
+ * interrupted turns should still allow Ralph/persistent-mode resume on the
+ * next stop-hook opportunity unless stronger explicit-cancel signals exist.
  *
  * NOTE: Per official Anthropic docs, the Stop hook "Does not run if
  * the stoppage occurred due to a user interrupt." This means this
@@ -85,7 +194,7 @@ export function isUserAbort(context) {
         return true;
     // Check stop_reason patterns indicating user abort
     // Exact-match patterns: short generic words that cause false positives with .includes()
-    const exactPatterns = ['aborted', 'abort', 'cancel', 'interrupt'];
+    const exactPatterns = ['aborted', 'abort', 'cancel'];
     // Substring patterns: compound words safe for .includes() matching
     const substringPatterns = ['user_cancel', 'user_interrupt', 'ctrl_c', 'manual_stop'];
     // Support both snake_case and camelCase field names
@@ -125,7 +234,7 @@ export function isExplicitCancelCommand(context) {
     if (explicitReasonPatterns.some((pattern) => pattern.test(reason) || pattern.test(endTurnReason))) {
         return true;
     }
-    const toolName = String(context.tool_name ?? context.toolName ?? '').toLowerCase();
+    const toolName = String(context.tool_name ?? context.toolName ?? '').toLowerCase().replace(/[\s-]+/g, '_');
     const toolInput = (context.tool_input ?? context.toolInput);
     if (toolName.includes('skill') && toolInput && typeof toolInput.skill === 'string') {
         const skill = toolInput.skill.toLowerCase();
@@ -174,6 +283,30 @@ export function isRateLimitStop(context) {
         'overloaded', 'capacity',
     ];
     return rateLimitPatterns.some(p => reason.includes(p) || endTurnReason.includes(p));
+}
+/**
+ * Scheduled wake-up stops should not trigger persistent-mode re-enforcement.
+ * Claude Code can resume `/loop` work through the native ScheduleWakeup path,
+ * and stale prior-mode state must not inject continuation/cancel prompts into
+ * that scheduled resume turn.
+ */
+export function isScheduledWakeupStop(context) {
+    if (!context)
+        return false;
+    const stopPatterns = [
+        'schedulewakeup',
+        'schedule_wakeup',
+        'scheduled_wakeup',
+        'scheduled_task',
+        'scheduled_resume',
+        'loop_resume',
+        'loop_wakeup',
+    ];
+    const toolName = String(context.tool_name ?? context.toolName ?? '').toLowerCase();
+    if (stopPatterns.some((pattern) => toolName.includes(pattern))) {
+        return true;
+    }
+    return getStopReasonFields(context).some((value) => stopPatterns.some((pattern) => value.includes(pattern)));
 }
 /**
  * Auth-related stop reasons that should bypass continuation re-enforcement.

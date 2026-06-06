@@ -3,8 +3,9 @@ import { mkdtemp, mkdir, rm, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 const mocks = vi.hoisted(() => ({
-    isWorkerAlive: vi.fn(async () => true),
+    getWorkerLiveness: vi.fn(async () => 'alive'),
     execFile: vi.fn(),
+    tmuxExecAsync: vi.fn(),
 }));
 vi.mock('child_process', async (importOriginal) => {
     const actual = await importOriginal();
@@ -13,26 +14,40 @@ vi.mock('child_process', async (importOriginal) => {
         execFile: mocks.execFile,
     };
 });
+vi.mock('../../cli/tmux-utils.js', async (importOriginal) => {
+    const actual = await importOriginal();
+    return {
+        ...actual,
+        tmuxExecAsync: mocks.tmuxExecAsync,
+    };
+});
 vi.mock('../tmux-session.js', async (importOriginal) => {
     const actual = await importOriginal();
     return {
         ...actual,
-        isWorkerAlive: mocks.isWorkerAlive,
+        getWorkerLiveness: mocks.getWorkerLiveness,
     };
 });
 describe('monitorTeamV2 pane-based stall inference', () => {
     let cwd;
     beforeEach(() => {
         vi.resetModules();
-        mocks.isWorkerAlive.mockReset();
+        mocks.getWorkerLiveness.mockReset();
         mocks.execFile.mockReset();
-        mocks.isWorkerAlive.mockResolvedValue(true);
+        mocks.tmuxExecAsync.mockReset();
+        mocks.getWorkerLiveness.mockResolvedValue('alive');
         mocks.execFile.mockImplementation((_cmd, args, cb) => {
             if (args[0] === 'capture-pane') {
                 cb(null, '> \n', '');
                 return;
             }
             cb(null, '', '');
+        });
+        mocks.tmuxExecAsync.mockImplementation(async (args) => {
+            if (args[0] === 'capture-pane') {
+                return { stdout: '> \n', stderr: '' };
+            }
+            return { stdout: '', stderr: '' };
         });
     });
     afterEach(async () => {
@@ -85,6 +100,26 @@ describe('monitorTeamV2 pane-based stall inference', () => {
         expect(snapshot?.nonReportingWorkers).toContain('worker-1');
         expect(snapshot?.recommendations).toContain('Investigate worker-1: assigned work but no work-start evidence; pane is idle at prompt');
     });
+    it('surfaces missing blocker task ids in monitor recommendations', async () => {
+        cwd = await mkdtemp(join(tmpdir(), 'omc-runtime-v2-monitor-missing-blocker-'));
+        await writeConfigAndTask('pending');
+        const teamRoot = join(cwd, '.omc', 'state', 'team', 'demo-team');
+        await writeFile(join(teamRoot, 'tasks', '1.json'), JSON.stringify({
+            id: '1',
+            subject: 'Blocked task',
+            description: 'Depends on missing task 13',
+            status: 'pending',
+            owner: 'worker-1',
+            blocked_by: ['13'],
+            depends_on: ['13'],
+            created_at: new Date().toISOString(),
+        }, null, 2), 'utf-8');
+        const { monitorTeamV2 } = await import('../runtime-v2.js');
+        const snapshot = await monitorTeamV2('demo-team', cwd);
+        expect(snapshot?.nonReportingWorkers).toContain('worker-1');
+        expect(snapshot?.recommendations).toContain('Investigate worker-1: task-1 is blocked by missing task ids [13]; pane is idle at prompt');
+        expect(snapshot?.recommendations).toContain('Investigate task-1: depends on missing task ids [13]');
+    });
     it('does not flag a worker when pane evidence shows active work despite missing reports', async () => {
         cwd = await mkdtemp(join(tmpdir(), 'omc-runtime-v2-monitor-active-'));
         await writeConfigAndTask('in_progress');
@@ -95,9 +130,39 @@ describe('monitorTeamV2 pane-based stall inference', () => {
             }
             cb(null, '', '');
         });
+        mocks.tmuxExecAsync.mockImplementation(async (args) => {
+            if (args[0] === 'capture-pane') {
+                return { stdout: 'Working on task...\n  esc to interrupt\n', stderr: '' };
+            }
+            return { stdout: '', stderr: '' };
+        });
         const { monitorTeamV2 } = await import('../runtime-v2.js');
         const snapshot = await monitorTeamV2('demo-team', cwd);
         expect(snapshot?.nonReportingWorkers).toEqual([]);
+    });
+    it('does not mark unknown pane liveness as dead or recommend reassignment', async () => {
+        cwd = await mkdtemp(join(tmpdir(), 'omc-runtime-v2-monitor-unknown-liveness-'));
+        await writeConfigAndTask('in_progress');
+        const teamRoot = join(cwd, '.omc', 'state', 'team', 'demo-team');
+        await writeFile(join(teamRoot, 'monitor-snapshot.json'), JSON.stringify({
+            taskStatusById: { 1: 'in_progress' },
+            workerAliveByName: { 'worker-1': true },
+            workerLivenessByName: { 'worker-1': 'alive' },
+            workerStateByName: { 'worker-1': 'working' },
+            workerTurnCountByName: { 'worker-1': 1 },
+            workerTaskIdByName: { 'worker-1': '1' },
+            mailboxNotifiedByMessageId: {},
+            completedEventTaskIds: {},
+        }, null, 2), 'utf-8');
+        mocks.getWorkerLiveness.mockResolvedValueOnce('unknown');
+        const { monitorTeamV2 } = await import('../runtime-v2.js');
+        const { readTeamEventsByType } = await import('../events.js');
+        const snapshot = await monitorTeamV2('demo-team', cwd);
+        expect(snapshot?.workers[0]?.alive).toBe(false);
+        expect(snapshot?.workers[0]?.liveness).toBe('unknown');
+        expect(snapshot?.deadWorkers).toEqual([]);
+        expect(snapshot?.recommendations).not.toContain('Reassign task-1 from dead worker-1');
+        await expect(readTeamEventsByType('demo-team', 'worker_stopped', cwd)).resolves.toEqual([]);
     });
     it('does not flag a worker when pane evidence shows startup bootstrapping instead of idle readiness', async () => {
         cwd = await mkdtemp(join(tmpdir(), 'omc-runtime-v2-monitor-bootstrap-'));
@@ -108,6 +173,12 @@ describe('monitorTeamV2 pane-based stall inference', () => {
                 return;
             }
             cb(null, '', '');
+        });
+        mocks.tmuxExecAsync.mockImplementation(async (args) => {
+            if (args[0] === 'capture-pane') {
+                return { stdout: 'model: loading\ngpt-5.3-codex high · 80% left\n', stderr: '' };
+            }
+            return { stdout: '', stderr: '' };
         });
         const { monitorTeamV2 } = await import('../runtime-v2.js');
         const snapshot = await monitorTeamV2('demo-team', cwd);

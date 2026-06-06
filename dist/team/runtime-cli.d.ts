@@ -5,6 +5,7 @@
  *
  * Bundled as CJS via esbuild (scripts/build-runtime-cli.mjs).
  */
+export declare function assertAutoMergeRuntimeSupported(useV2: boolean, autoMerge: boolean): void;
 interface TaskResult {
     taskId: string;
     status: string;
@@ -16,6 +17,12 @@ interface CliOutput {
     taskResults: TaskResult[];
     duration: number;
     workerCount: number;
+}
+export type TerminalPhaseResult = 'complete' | 'failed' | 'cancelled';
+export interface TerminalCliResult {
+    output: CliOutput;
+    exitCode: number;
+    notice: string;
 }
 type TerminalStatus = 'completed' | 'failed' | null;
 export declare function getTerminalStatus(taskCounts: {
@@ -29,5 +36,7 @@ export declare function checkWatchdogFailedMarker(stateRoot: string, startTime: 
     reason?: string;
 }>;
 export declare function writeResultArtifact(output: CliOutput, finishedAt: string, jobId?: string | undefined, omcJobsDir?: string | undefined): Promise<void>;
+export declare function buildCliOutput(stateRoot: string, teamName: string, status: 'completed' | 'failed', workerCount: number, startTimeMs: number): CliOutput;
+export declare function buildTerminalCliResult(stateRoot: string, teamName: string, phase: TerminalPhaseResult, workerCount: number, startTimeMs: number): TerminalCliResult;
 export {};
 //# sourceMappingURL=runtime-cli.d.ts.map

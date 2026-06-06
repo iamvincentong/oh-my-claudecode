@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { LSP_SERVERS, getServerForFile, getServerForLanguage } from '../tools/lsp/servers.js';
 describe('LSP Server Configurations', () => {
     const serverKeys = Object.keys(LSP_SERVERS);
-    it('should have 19 configured servers', () => {
-        expect(serverKeys).toHaveLength(19);
+    it('should have 20 configured servers', () => {
+        expect(serverKeys).toHaveLength(20);
     });
     it.each(serverKeys)('server "%s" should have valid config', (key) => {
         const config = LSP_SERVERS[key];
@@ -32,7 +32,7 @@ describe('LSP Server Configurations', () => {
 describe('getServerForFile', () => {
     const cases = [
         ['app.ts', 'TypeScript Language Server'],
-        ['app.py', 'Python Language Server (pylsp)'],
+        ['app.py', 'Python Language Server (ty)'],
         ['main.rs', 'Rust Analyzer'],
         ['main.go', 'gopls'],
         ['main.c', 'clangd'],
@@ -40,6 +40,7 @@ describe('getServerForFile', () => {
         ['data.json', 'JSON Language Server'],
         ['index.html', 'HTML Language Server'],
         ['style.css', 'CSS Language Server'],
+        ['App.vue', 'Vue Language Server (Volar)'],
         ['config.yaml', 'YAML Language Server'],
         ['index.php', 'PHP Language Server (Intelephense)'],
         ['template.phtml', 'PHP Language Server (Intelephense)'],
@@ -74,7 +75,7 @@ describe('getServerForLanguage', () => {
     const cases = [
         ['typescript', 'TypeScript Language Server'],
         ['javascript', 'TypeScript Language Server'],
-        ['python', 'Python Language Server (pylsp)'],
+        ['python', 'Python Language Server (ty)'],
         ['rust', 'Rust Analyzer'],
         ['go', 'gopls'],
         ['golang', 'gopls'],
@@ -84,6 +85,7 @@ describe('getServerForLanguage', () => {
         ['json', 'JSON Language Server'],
         ['html', 'HTML Language Server'],
         ['css', 'CSS Language Server'],
+        ['vue', 'Vue Language Server (Volar)'],
         ['yaml', 'YAML Language Server'],
         // New languages
         ['php', 'PHP Language Server (Intelephense)'],
@@ -128,6 +130,12 @@ describe('getServerForLanguage', () => {
 describe('OmniSharp command casing', () => {
     it('should use lowercase command for cross-platform compatibility', () => {
         expect(LSP_SERVERS.csharp.command).toBe('omnisharp');
+    });
+});
+describe('Python server selection', () => {
+    it('should invoke ty via its LSP subcommand', () => {
+        expect(LSP_SERVERS.python.command).toBe('ty');
+        expect(LSP_SERVERS.python.args).toEqual(['server']);
     });
 });
 //# sourceMappingURL=lsp-servers.test.js.map

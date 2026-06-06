@@ -30,6 +30,7 @@ const THRESHOLD = parseInt(process.env.OMC_CONTEXT_GUARD_THRESHOLD || '75', 10);
 const CRITICAL_THRESHOLD = 95;
 const MAX_BLOCKS = 2;
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
+const GIT_PROBE_TIMEOUT_MS = 1000;
 
 /**
  * Detect if stop was triggered by context-limit related reasons.
@@ -70,6 +71,21 @@ function isUserAbort(data) {
   );
 }
 
+function hasLocalGitMarker(startDir) {
+  if (!startDir) return false;
+
+  return existsSync(join(resolve(startDir), '.git'));
+}
+
+function runGitRevParse(args, cwd) {
+  return execSync(`git rev-parse ${args.join(' ')}`, {
+    cwd,
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+    timeout: GIT_PROBE_TIMEOUT_MS,
+  }).trim();
+}
+
 /**
  * Resolve a transcript path that may be mismatched in worktree sessions (issue #1094).
  * When Claude Code runs inside .claude/worktrees/X, the encoded project directory
@@ -95,21 +111,15 @@ function resolveTranscriptPath(transcriptPath, cwd) {
   // transcript path encodes the worktree CWD, but the file lives under
   // the main repo's encoded path.
   const effectiveCwd = cwd || process.cwd();
+  if (!hasLocalGitMarker(effectiveCwd)) return transcriptPath;
+
   try {
-    const gitCommonDir = execSync('git rev-parse --git-common-dir', {
-      cwd: effectiveCwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    const gitCommonDir = runGitRevParse(['--git-common-dir'], effectiveCwd);
 
     const absoluteCommonDir = resolve(effectiveCwd, gitCommonDir);
     const mainRepoRoot = dirname(absoluteCommonDir);
 
-    const worktreeTop = execSync('git rev-parse --show-toplevel', {
-      cwd: effectiveCwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).trim();
+    const worktreeTop = runGitRevParse(['--show-toplevel'], effectiveCwd);
 
     if (mainRepoRoot !== worktreeTop) {
       const lastSep = transcriptPath.lastIndexOf('/');

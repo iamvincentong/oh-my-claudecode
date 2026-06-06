@@ -19,6 +19,14 @@ export interface SessionMetrics {
 export interface HookOutput {
     continue: boolean;
 }
+export interface SessionEndCleanupWorkerPayload {
+    directory: string;
+    sessionId: string;
+    transcriptPath: string;
+    cleanupBudgetMs: number;
+    initialTeamNames?: string[];
+}
+export declare function resolveSessionEndCleanupBudgetMs(env?: NodeJS.ProcessEnv): number;
 /**
  * Get session start time from state files.
  *
@@ -40,9 +48,16 @@ export declare function getSessionStartTime(directory: string, sessionId?: strin
  */
 export declare function recordSessionMetrics(directory: string, input: SessionEndInput): SessionMetrics;
 /**
- * Clean up transient state files
+ * Clean up transient state files.
+ *
+ * @param directory - Worktree root (or any path under it).
+ * @param endingSessionId - Optional id of the session that is ending.
+ *   When provided, per-session transient caches (HUD stdin cache) are
+ *   removed only from that session's directory so other concurrent
+ *   sessions keep their live state. When omitted (e.g. legacy callers
+ *   or tests), the previous behavior is preserved for compatibility.
  */
-export declare function cleanupTransientState(directory: string): number;
+export declare function cleanupTransientState(directory: string, endingSessionId?: string): number;
 /**
  * Extract python_repl research session IDs from transcript JSONL.
  * These sessions are terminated on SessionEnd to prevent bridge leaks.
@@ -76,12 +91,10 @@ export declare function cleanupMissionState(directory: string, sessionId?: strin
  * Export session summary to .omc/sessions/
  */
 export declare function exportSessionSummary(directory: string, metrics: SessionMetrics): void;
+export declare function processSessionEndCleanupWorker(payload: SessionEndCleanupWorkerPayload): Promise<void>;
 /**
  * Process session end
  */
 export declare function processSessionEnd(input: SessionEndInput): Promise<HookOutput>;
-/**
- * Main hook entry point
- */
 export declare function handleSessionEnd(input: SessionEndInput): Promise<HookOutput>;
 //# sourceMappingURL=index.d.ts.map

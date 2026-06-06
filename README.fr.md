@@ -7,13 +7,13 @@
 [![GitHub stars](https://img.shields.io/github/stars/Yeachan-Heo/oh-my-claudecode?style=flat&color=yellow)](https://github.com/Yeachan-Heo/oh-my-claudecode/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
-[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
+[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/sj4exxQ9v)
 
 **Orchestration multi-agents pour Claude Code. Aucune courbe d'apprentissage.**
 
 _N'apprenez pas Claude Code. Utilisez simplement OMC._
 
-[Démarrer](#démarrage-rapide) • [Documentation](https://yeachan-heo.github.io/oh-my-claudecode-website) • [Guide de migration](docs/MIGRATION.md)
+[Démarrer](#démarrage-rapide) • [Documentation](https://yeachan-heo.github.io/oh-my-claudecode-website) • [Guide de migration](docs/MIGRATION.md) • [Discord](https://discord.gg/sj4exxQ9v)
 
 ---
 
@@ -111,7 +111,7 @@ Si vous rencontrez des problèmes après la mise à jour, videz l'ancien cache d
 
 ### Modes d'orchestration
 
-Plusieurs stratégies pour différents cas d'utilisation — de l'orchestration Team au refactoring économe en tokens. [En savoir plus →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#execution-modes)
+Plusieurs stratégies pour différents cas d'utilisation — de l'orchestration Team au refactoring économe en tokens. [En savoir plus →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#execution-modes)
 
 | Mode                            | Description                                                                                 | Utilisation                                                                      |
 | ------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
@@ -167,7 +167,7 @@ Enveloppez le handler à server.py:42 dans try/except ClientDisconnectedError...
 ```
 
 **Gestion des compétences :** `/skill list | add | remove | edit | search`
-**Auto-apprentissage :** `/learner` extrait des patterns réutilisables avec des critères de qualité stricts
+**Auto-apprentissage :** `/skillify` extrait des patterns réutilisables avec des critères de qualité stricts
 **Auto-injection :** Les compétences correspondantes se chargent automatiquement dans le contexte — aucun rappel manuel nécessaire
 
 [Liste complète des fonctionnalités →](docs/REFERENCE.md)

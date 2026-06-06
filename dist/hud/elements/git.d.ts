@@ -3,6 +3,7 @@
  *
  * Renders git repository name and branch information.
  */
+import type { HudLabels } from '../types.js';
 export interface WorktreeDetection {
     isWorktree: boolean;
     worktreeName: string | null;
@@ -62,7 +63,7 @@ export declare function renderGitRepo(cwd?: string): string | null;
 export declare function renderGitBranch(cwd?: string): string | null;
 /**
  * Get git working tree status counts.
- * Parses `git status --porcelain -b` for staged, modified, untracked,
+ * Parses `git --no-optional-locks status --porcelain -b` for staged, modified, untracked,
  * ahead, and behind counts.
  *
  * @param cwd - Working directory
@@ -76,5 +77,5 @@ export declare function getGitStatusCounts(cwd?: string): GitStatusCounts | null
  * @param cwd - Working directory
  * @returns Formatted status or null if clean or not in a git repo
  */
-export declare function renderGitStatus(cwd?: string): string | null;
+export declare function renderGitStatus(cwd?: string, labels?: Pick<HudLabels, 'staged' | 'modified' | 'untracked' | 'ahead' | 'behind'>): string | null;
 //# sourceMappingURL=git.d.ts.map

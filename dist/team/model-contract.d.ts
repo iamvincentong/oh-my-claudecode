@@ -1,4 +1,4 @@
-export type CliAgentType = 'claude' | 'codex' | 'gemini';
+export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok';
 export interface CliAgentContract {
     agentType: CliAgentType;
     binary: string;
@@ -7,7 +7,7 @@ export interface CliAgentContract {
     parseOutput(rawOutput: string): string;
     /** Whether this agent supports a prompt/headless mode that bypasses TUI input */
     supportsPromptMode?: boolean;
-    /** CLI flag for prompt mode (e.g., '-i' for gemini) */
+    /** CLI flag for prompt mode (e.g., '-p' for gemini) */
     promptModeFlag?: string;
 }
 export interface WorkerLaunchConfig {
@@ -21,6 +21,12 @@ export interface WorkerLaunchConfig {
      * Used by runtime preflight validation to ensure spawns are pinned.
      */
     resolvedBinaryPath?: string;
+    /**
+     * Optional path the worker writes its structured verdict JSON to
+     * (used by the CLI-worker output contract for critic/reviewer stages).
+     * Consumed by the worker-completion handler in runtime-v2.
+     */
+    output_file?: string;
 }
 /** @deprecated Backward-compat shim for older team API consumers. */
 export interface CliBinaryValidation {
@@ -30,6 +36,7 @@ export interface CliBinaryValidation {
     reason?: string;
 }
 declare function getTrustedPrefixes(): string[];
+declare function isTrustedPrefix(resolvedPath: string): boolean;
 /** @deprecated Backward-compat shim; non-interactive shells should generally skip RC files. */
 export declare function shouldLoadShellRc(): boolean;
 /** @deprecated Backward-compat shim retained for API compatibility. */
@@ -41,7 +48,16 @@ export declare function validateCliBinaryPath(binary: string): CliBinaryValidati
 export declare const _testInternals: {
     UNTRUSTED_PATH_PATTERNS: RegExp[];
     getTrustedPrefixes: typeof getTrustedPrefixes;
+    isTrustedPrefix: typeof isTrustedPrefix;
 };
+/**
+ * Detect parent launch env for Claude Code API-key auth.
+ *
+ * Claude Code's `--dangerously-skip-permissions` only bypasses permission
+ * prompts. When an API key is present, `--bare` is needed to avoid the
+ * interactive OAuth/session login path for team worker panes.
+ */
+export declare function shouldUseClaudeBareMode(env?: NodeJS.ProcessEnv): boolean;
 export declare function getContract(agentType: CliAgentType): CliAgentContract;
 export declare function isCliAvailable(agentType: CliAgentType): boolean;
 export declare function validateCliAvailable(agentType: CliAgentType): void;

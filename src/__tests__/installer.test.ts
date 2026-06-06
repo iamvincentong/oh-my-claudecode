@@ -127,25 +127,36 @@ describe('Installer Constants', () => {
 
     it('should have consistent model assignments', () => {
       const modelExpectations: Record<string, string> = {
-        'architect.md': 'claude-opus-4-6',
-        'executor.md': 'claude-sonnet-4-6',
-        'designer.md': 'claude-sonnet-4-6',
-        'writer.md': 'claude-haiku-4-5',
-        'critic.md': 'claude-opus-4-6',
-        'analyst.md': 'claude-opus-4-6',
-        'planner.md': 'claude-opus-4-6',
-        'qa-tester.md': 'claude-sonnet-4-6',
-        'debugger.md': 'claude-sonnet-4-6',
-        'verifier.md': 'claude-sonnet-4-6',
-        'test-engineer.md': 'claude-sonnet-4-6',
-        'security-reviewer.md': 'claude-opus-4-6',
-        'git-master.md': 'claude-sonnet-4-6',
+        'architect.md': 'opus',
+        'executor.md': 'sonnet',
+        'designer.md': 'sonnet',
+        'writer.md': 'haiku',
+        'critic.md': 'opus',
+        'analyst.md': 'opus',
+        'planner.md': 'opus',
+        'qa-tester.md': 'sonnet',
+        'debugger.md': 'sonnet',
+        'verifier.md': 'sonnet',
+        'test-engineer.md': 'sonnet',
+        'security-reviewer.md': 'opus',
+        'git-master.md': 'sonnet',
       };
 
       for (const [filename, expectedModel] of Object.entries(modelExpectations)) {
         const content = AGENT_DEFINITIONS[filename];
         expect(content).toBeTruthy();
         expect(content).toMatch(new RegExp(`^model:\\s+${expectedModel}`, 'm'));
+      }
+    });
+
+    it('ships routable tier aliases in agent frontmatter instead of literal Claude model IDs', () => {
+      for (const [filename, content] of Object.entries(AGENT_DEFINITIONS)) {
+        if (filename === 'AGENTS.md') continue;
+
+        const modelMatch = content.match(/^model:\s+(\S+)/m);
+        expect(modelMatch, `${filename} should declare a model alias`).toBeTruthy();
+        expect(modelMatch![1], `${filename} should use a tier alias`).toMatch(/^(opus|sonnet|haiku)$/);
+        expect(content, `${filename} should not pin a literal Claude model ID`).not.toMatch(/^model:\s+claude-/m);
       }
     });
 
@@ -156,10 +167,30 @@ describe('Installer Constants', () => {
     });
   });
 
-  describe('Commands directory removed (#582)', () => {
-    it('should NOT have a commands/ directory in the package root', () => {
-      const commandsDir = join(getPackageDir(), 'commands');
-      expect(existsSync(commandsDir)).toBe(false);
+  describe('Claude Code plugin command wrappers', () => {
+    it('should ship package-root commands/*.md wrappers through plugin.json', () => {
+      const packageDir = getPackageDir();
+      const commandsDir = join(packageDir, 'commands');
+      const pluginJson = JSON.parse(
+        readFileSync(join(packageDir, '.claude-plugin', 'plugin.json'), 'utf-8')
+      ) as { commands?: unknown };
+
+      expect(pluginJson.commands).toBe('./commands/');
+      expect(existsSync(commandsDir)).toBe(true);
+
+      const files = readdirSync(commandsDir).filter(f => f.endsWith('.md'));
+      expect(files.length).toBeGreaterThan(0);
+
+      for (const file of files) {
+        const content = readFileSync(join(commandsDir, file), 'utf-8');
+        if (file === 'compact.md') {
+          expect(content, 'compact.md should avoid unsupported Skill compact invocation').not.toContain('Skill("compact")');
+          expect(content, 'compact.md should provide a manual native /compact handoff').toContain('bare Claude Code command');
+        } else {
+          expect(content, `${file} should dispatch to a bundled skill`).toContain('SKILL.md');
+        }
+        expect(content, `${file} should pass through user arguments`).toContain('$ARGUMENTS');
+      }
     });
   });
 
@@ -168,14 +199,7 @@ describe('Installer Constants', () => {
       const packageDir = getPackageDir();
       const commandsDir = join(packageDir, 'commands');
 
-      // commands/ directory should not exist at all
-      if (!existsSync(commandsDir)) {
-        // This is the expected state - no commands directory
-        expect(true).toBe(true);
-        return;
-      }
-
-      // If commands/ somehow gets re-added, ensure no self-referential stubs
+      // commands/ now intentionally contains Claude Code plugin wrappers.
       const files = readdirSync(commandsDir).filter(f => f.endsWith('.md'));
       const selfReferentialStubs: string[] = [];
 
@@ -630,7 +654,7 @@ describe('Installer Constants', () => {
       const libFiles = readdirSync(templatesLibDir);
 
       // Required lib files that must be present
-      const requiredFiles = ['stdin.mjs', 'atomic-write.mjs', 'config-dir.mjs'];
+      const requiredFiles = ['stdin.mjs', 'atomic-write.mjs', 'config-dir.mjs', 'state-root.mjs', 'model-routing-override-message.mjs'];
       for (const file of requiredFiles) {
         expect(libFiles).toContain(file);
       }

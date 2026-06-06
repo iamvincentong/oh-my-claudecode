@@ -28,6 +28,8 @@ export function detectAllClis() {
         claude: detectCli('claude'),
         codex: detectCli('codex'),
         gemini: detectCli('gemini'),
+        cursor: detectCli('cursor-agent'),
+        grok: detectCli('grok'),
     };
 }
 //# sourceMappingURL=cli-detection.js.map

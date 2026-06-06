@@ -61,6 +61,8 @@ describe("team/followup-planner", () => {
         isApprovedExecutionFollowupShortcut("team", "team", {
           planningComplete: false,
           priorSkill: "ralplan",
+          ralplanTerminal: true,
+          approvedExecutionLaunchHint: true,
         }),
       ).toBe(false);
     });
@@ -70,6 +72,30 @@ describe("team/followup-planner", () => {
         isApprovedExecutionFollowupShortcut("team", "team", {
           planningComplete: true,
           priorSkill: "plan",
+          ralplanTerminal: true,
+          approvedExecutionLaunchHint: true,
+        }),
+      ).toBe(false);
+    });
+
+    it("requires ralplan to be terminal so compact continuation cannot launch execution mid-plan", () => {
+      expect(
+        isApprovedExecutionFollowupShortcut("team", "team", {
+          planningComplete: true,
+          priorSkill: "ralplan",
+          ralplanTerminal: false,
+          approvedExecutionLaunchHint: true,
+        }),
+      ).toBe(false);
+    });
+
+    it("requires an approved launch hint before short follow-up execution", () => {
+      expect(
+        isApprovedExecutionFollowupShortcut("team", "team", {
+          planningComplete: true,
+          priorSkill: "ralplan",
+          ralplanTerminal: true,
+          approvedExecutionLaunchHint: false,
         }),
       ).toBe(false);
     });
@@ -79,6 +105,8 @@ describe("team/followup-planner", () => {
         isApprovedExecutionFollowupShortcut("team", "team", {
           planningComplete: true,
           priorSkill: "ralplan",
+          ralplanTerminal: true,
+          approvedExecutionLaunchHint: true,
         }),
       ).toBe(true);
     });
@@ -88,6 +116,8 @@ describe("team/followup-planner", () => {
         isApprovedExecutionFollowupShortcut("ralph", "ralph", {
           planningComplete: true,
           priorSkill: "ralplan",
+          ralplanTerminal: true,
+          approvedExecutionLaunchHint: true,
         }),
       ).toBe(true);
     });
@@ -251,6 +281,48 @@ describe("team/followup-planner", () => {
       expect(result!.hint.task).toBe("implement auth");
       expect(result!.hint.workerCount).toBe(3);
       expect(result!.launchCommand).toContain("omc team");
+    });
+
+    it("resolves follow-up context from OMX planning artifacts written after a deep-interview/ralplan cycle", () => {
+      const omxPlansDir = join(testDir, ".omx", "plans");
+      mkdirSync(omxPlansDir, { recursive: true });
+      writeFileSync(
+        join(omxPlansDir, "prd-capture-page-ui-draft.md"),
+        [
+          "# PRD",
+          "",
+          "## Acceptance criteria",
+          "- done",
+          "",
+          "## Requirement coverage map",
+          "- req -> impl",
+          "",
+          'omx team ".omx/plans/ralplan-capture-page-ui-draft-v7.md"',
+          "",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(omxPlansDir, "test-spec-capture-page-ui-draft.md"),
+        [
+          "# Test Spec",
+          "",
+          "## Unit coverage",
+          "- unit",
+          "",
+          "## Verification mapping",
+          "- verify",
+          "",
+        ].join("\n"),
+      );
+
+      const result = resolveApprovedTeamFollowupContext(testDir, "team");
+
+      expect(result).not.toBeNull();
+      expect(result!.hint.mode).toBe("team");
+      expect(result!.launchCommand).toBe(
+        'omx team ".omx/plans/ralplan-capture-page-ui-draft-v7.md"',
+      );
+      expect(result!.hint.sourcePath).toContain(join(".omx", "plans", "prd-capture-page-ui-draft.md"));
     });
   });
 });

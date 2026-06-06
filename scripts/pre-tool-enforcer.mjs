@@ -7,11 +7,15 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { dirname, join, resolve } from 'path';
+import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { getClaudeConfigDir } from './lib/config-dir.mjs';
 import { evaluateAgentHeavyPreflight } from './lib/pre-tool-enforcer-preflight.mjs';
+import { evaluateForceAgentDelegation } from './lib/force-agent-delegation-preflight.mjs';
+import { resolveOmcStateRoot } from './lib/state-root.mjs';
 import { readStdin } from './lib/stdin.mjs';
 
 // Inlined from src/config/models.ts — avoids a dist/ import so the hook works
@@ -28,9 +32,85 @@ function hasExtendedContextSuffix(modelId) {
 function isSubagentSafeModelId(modelId) {
   return isProviderSpecificModelId(modelId) && !hasExtendedContextSuffix(modelId);
 }
+function isBedrockProviderEnv() {
+  if (process.env.CLAUDE_CODE_USE_BEDROCK === '1') return true;
+  const modelId = process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || '';
+  if (/^((us|eu|ap|global)\.anthropic\.|anthropic\.claude)/i.test(modelId)) return true;
+  if (
+    /^arn:aws(-[^:]+)?:bedrock:/i.test(modelId)
+    && /:(inference-profile|application-inference-profile)\//i.test(modelId)
+    && modelId.toLowerCase().includes('claude')
+  ) {
+    return true;
+  }
+  return false;
+}
+function isVertexProviderEnv() {
+  if (process.env.CLAUDE_CODE_USE_VERTEX === '1') return true;
+  const modelId = process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || '';
+  return !!modelId && modelId.toLowerCase().startsWith('vertex_ai/');
+}
+function getActiveModelIds() {
+  return [process.env.CLAUDE_MODEL || '', process.env.ANTHROPIC_MODEL || ''].filter(Boolean);
+}
+function isNormalClaudeModelId(modelId) {
+  const lower = (modelId || '').toLowerCase();
+  return Boolean(lower) && lower.includes('claude') && !isProviderSpecificModelId(modelId);
+}
+function hasNormalClaudeActiveModel() {
+  return getActiveModelIds().some(isNormalClaudeModelId);
+}
+function isConfigForceInheritProxyEnv() {
+  const config = loadOmcConfig();
+  return config.routing?.forceInherit === true && !hasNormalClaudeActiveModel();
+}
+function isNonClaudeProviderEnv() {
+  if (isBedrockProviderEnv() || isVertexProviderEnv()) return true;
+  const modelId = process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || '';
+  if (modelId && !modelId.toLowerCase().includes('claude')) return true;
+  const baseUrl = process.env.ANTHROPIC_BASE_URL || '';
+  if (baseUrl && !baseUrl.includes('anthropic.com')) return true;
+  return isConfigForceInheritProxyEnv();
+}
+function acceptsProxyAnthropicDefaultTierValue(key, value) {
+  return key.startsWith('ANTHROPIC_DEFAULT_')
+    && Boolean(value)
+    && isNonClaudeProviderEnv()
+    && !isBedrockProviderEnv()
+    && !isVertexProviderEnv();
+}
 const TIER_ALIASES = new Set(['sonnet', 'opus', 'haiku']);
 function isTierAlias(modelId) {
   return TIER_ALIASES.has((modelId || '').toLowerCase());
+}
+// Resolution chain for tier alias → subagent-safe model ID.
+// Order mirrors src/config/models.ts:TIER_ENV_KEYS with OMC_SUBAGENT_MODEL as top-priority override.
+// OMC_SUBAGENT_MODEL at position 0 wins for ALL tiers — tier-specific vars are only
+// reached when it is unset or fails isSubagentSafeModelId validation.
+// OMC_MODEL_* is intentionally excluded: those are OMC-internal vars that the OMC bridge
+// reads for its own routing, but CC itself does not read them when resolving tier aliases
+// (sonnet/haiku/opus). Allowing OMC_MODEL_* as proof would let the hook pass while CC
+// still fails to route the alias, reintroducing the downstream deadlock this gate prevents.
+const TIER_TO_DEFAULT_ENV_KEYS = {
+  haiku:  ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_HAIKU_MODEL',  'ANTHROPIC_DEFAULT_HAIKU_MODEL'],
+  sonnet: ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_SONNET_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL'],
+  opus:   ['OMC_SUBAGENT_MODEL', 'CLAUDE_CODE_BEDROCK_OPUS_MODEL',   'ANTHROPIC_DEFAULT_OPUS_MODEL'],
+};
+function resolveTierAliasToSafeModel(tierAlias) {
+  const keys = TIER_TO_DEFAULT_ENV_KEYS[(tierAlias || '').toLowerCase()];
+  if (!keys) return '';
+  for (const key of keys) {
+    const value = (process.env[key] || '').trim();
+    // CC-native vars (ANTHROPIC_DEFAULT_* and CLAUDE_CODE_BEDROCK_*) are read by CC's own
+    // model resolution, which handles [1m] suffixes correctly for explicit model= calls.
+    // OMC-internal vars (OMC_SUBAGENT_MODEL, OMC_MODEL_*) are not read by CC, so a [1m]
+    // value there is not a valid routing proof — keep the stricter isSubagentSafeModelId check.
+    const isAnthropicDefaultTierVar = key.startsWith('ANTHROPIC_DEFAULT_');
+    const isNativeCcVar = isAnthropicDefaultTierVar || key.startsWith('CLAUDE_CODE_BEDROCK_');
+    const validator = isNativeCcVar ? isProviderSpecificModelId : isSubagentSafeModelId;
+    if (value && (validator(value) || acceptsProxyAnthropicDefaultTierValue(key, value))) return value;
+  }
+  return '';
 }
 /** Map a bare Anthropic model ID to its CC tier alias (sonnet/opus/haiku), or null if unrecognised. */
 function normalizeToCcAlias(model) {
@@ -80,11 +160,251 @@ function readAgentDefinitionModel(subagentType) {
   }
 }
 
+
+const SLOP_RISK_TOOL_NAMES = new Set([
+  'Task',
+  'TaskCreate',
+  'TaskUpdate',
+  'Agent',
+  'Bash',
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'NotebookEdit',
+]);
+// Keep the SLOP trigger tied to actual fallback/workaround semantics.
+// Primary-path domain names and comments often use neutral qualifiers such as
+// "extra" or "additional"; those words alone must not enter this gate.
+const SLOP_FALLBACK_LANGUAGE_PATTERN = /\b(?:fallback|fall\s+back|workaround|work\s+around)\b/i;
+const SLOP_FALLBACK_ACTION_PATTERNS = [
+  /\b(?:add|build|create|implement|introduce|make|patch|use|using|write)\s+(?:an?\s+|the\s+)?(?:fallback|workaround)\b/i,
+  /\b(?:fallback|workaround)\s+(?:layer|path|handler|shim|patch|implementation|mechanism|mode)\b/i,
+  /\bworkaround\s+(?:it|this|that|the|a|an)\b/i,
+  /\b(?:fall\s+back|fallback)\s+(?:to|on|onto)\b/i,
+  /\bwork\s+around\s+(?:it|this|that|the|a|an)\b/i,
+  /\bwork\s+around\s+(?!(?:it|this|that|the|a|an)\b)(?:[a-z0-9][\w-]*\s+){0,5}[a-z0-9][\w-]*\b/i,
+  /(?:^|[\s"'`=:/\\])[\w.-]*(?:fallback|workaround)[\w.-]*\.(?:cjs|js|mjs|py|sh|ts|tsx)\b/i,
+];
+const SLOP_BENIGN_TECHNICAL_PATTERNS = [
+  /\bfail[-\s]?soft\s+fallback(?:\s+(?:value|behavior|behaviour|result|semantics?))?\b/i,
+  /\bfallback\s+(?:value|variable|parameter|argument|option|setting|config(?:uration)?|default)\b/i,
+  /\bfallback\s+to\s+(?:the\s+)?default(?:\s+(?:config(?:uration)?|settings?|value|behavior|behaviour|option))?\b/i,
+  /\b(?:workaround|work\s+around)\s+for\s+(?:commit|change|issue|bug|regression|version|release|pr|pull\s+request|#[0-9]+|[a-f0-9]{7,40}\b)/i,
+  /\b(?:memory|sql|sqlite|mysql|postgres(?:ql)?|typescript|node|browser|runtime)\s+workaround\b/i,
+];
+const SLOP_DOC_CONTEXT_PATTERN = /(?:^|[/\\])(?:docs?|documentation|guides?|instructions?|prompts?|\.om[ctx])(?:[/\\]|$)|\.(?:md|mdx|txt|rst)$/i;
+const SLOP_SELF_REFERENCE_PATH_PATTERN = /(?:^|[/\\])(?:pre-tool-enforcer(?:\.mjs)?|pre-tool-enforcer\.test\.ts)(?:$|[/\\])/i;
+
+function collectStringValues(value, output = [], depth = 0) {
+  if (depth > 5 || output.length > 100) return output;
+  if (typeof value === 'string') {
+    output.push(value);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStringValues(item, output, depth + 1);
+    return output;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      // Skip hook/runtime metadata so warnings are driven by user-authored tool intent.
+      if (/^(cwd|directory|session_?id|transcript_?path|hook_event_name)$/i.test(key)) continue;
+      collectStringValues(child, output, depth + 1);
+    }
+  }
+  return output;
+}
+
+function collectLikelyPathValues(value, output = [], depth = 0) {
+  if (depth > 5 || output.length > 100 || !value || typeof value !== 'object') return output;
+  if (Array.isArray(value)) {
+    for (const item of value) collectLikelyPathValues(item, output, depth + 1);
+    return output;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === 'string' && /(?:^|_)(?:file_?path|path|filename|target|command)$/i.test(key)) {
+      output.push(child);
+      continue;
+    }
+    collectLikelyPathValues(child, output, depth + 1);
+  }
+  return output;
+}
+
+function stripSlopQuotedAndCodeContexts(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, '\n')
+    .replace(/`[^`\r\n]*`/g, ' ')
+    .replace(/(["'])(?:\\.|(?!\1)[^\\\r\n])*\1/g, ' ');
+}
+
+function splitSlopInspectionSegments(text) {
+  return text
+    .split(/[\r\n!?;]+/)
+    .map(segment => segment.trim())
+    .filter(Boolean);
+}
+
+function removeBenignTechnicalSlopFallbackSpans(text) {
+  return SLOP_BENIGN_TECHNICAL_PATTERNS.reduce(
+    (result, pattern) => {
+      const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+      return result.replace(new RegExp(pattern.source, flags), ' ');
+    },
+    text,
+  );
+}
+
+function hasSlopFallbackActionShape(text) {
+  const strippedText = stripSlopQuotedAndCodeContexts(text);
+  return splitSlopInspectionSegments(strippedText).some(segment => (
+    SLOP_FALLBACK_ACTION_PATTERNS.some(pattern => (
+      pattern.test(removeBenignTechnicalSlopFallbackSpans(segment))
+    ))
+  ));
+}
+
+function isSelfReferentialSlopContext(toolInput) {
+  return collectLikelyPathValues(toolInput).some(value => SLOP_SELF_REFERENCE_PATH_PATTERN.test(value));
+}
+
+function isDocumentationSlopContext(toolInput) {
+  const pathLikeValues = collectLikelyPathValues(toolInput);
+  return pathLikeValues.some(value => SLOP_DOC_CONTEXT_PATTERN.test(value));
+}
+
+function shouldWarnForSlopFallbackLanguage(data, toolName, inspectedText) {
+  if (!SLOP_RISK_TOOL_NAMES.has(toolName)) return false;
+  if (!SLOP_FALLBACK_LANGUAGE_PATTERN.test(inspectedText)) return false;
+
+  const toolInput = data.toolInput || data.tool_input || {};
+  if (isSelfReferentialSlopContext(toolInput)) return false;
+  if (isDocumentationSlopContext(toolInput)) {
+    return false;
+  }
+
+  return hasSlopFallbackActionShape(inspectedText);
+}
+
+function generateSlopWarning(data, toolName) {
+  const toolInput = data.toolInput || data.tool_input || {};
+  const promptLikeFields = {
+    prompt: data.prompt,
+    userPrompt: data.userPrompt,
+    user_prompt: data.user_prompt,
+    message: data.message,
+  };
+  const inspectedText = collectStringValues(toolInput)
+    .concat(collectStringValues(promptLikeFields))
+    .join('\n');
+  if (!shouldWarnForSlopFallbackLanguage(data, toolName, inspectedText)) return '';
+
+  return '[SLOP WARNING] Detected fallback/workaround language in this tool input. ' +
+    'Do not make potential slop: avoid ad-hoc fallback layers, workaround shims, or environment-specific patches unless explicitly justified. ' +
+    'For architecture concerns, consult the architect for a concrete design first. ' +
+    'If this seems environment-specific, ask the user to confirm constraints before proceeding.';
+}
+
+function combineHookMessages(...messages) {
+  return messages.filter(Boolean).join('\n\n');
+}
+
+
+const ADVISORY_THROTTLE_STATE_FILE = 'pre-tool-advisory-throttle.json';
+const ADVISORY_THROTTLE_MAX_ENTRIES = 100;
+const ADVISORY_THROTTLE_DEFAULT_COOLDOWN_MS = 5 * 60 * 1000;
+const ADVISORY_THROTTLE_MIN_PRUNE_WINDOW_MS = 60 * 60 * 1000;
+
+function getAdvisoryThrottleCooldownMs() {
+  const raw = process.env.OMC_PRE_TOOL_ADVISORY_COOLDOWN_MS;
+  if (raw == null || raw === '') return ADVISORY_THROTTLE_DEFAULT_COOLDOWN_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return ADVISORY_THROTTLE_DEFAULT_COOLDOWN_MS;
+  return Math.max(0, parsed);
+}
+
+function getAdvisoryThrottleNowMs() {
+  const raw = process.env.OMC_PRE_TOOL_ADVISORY_NOW_MS;
+  if (raw != null && raw !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return Date.now();
+}
+
+function getAdvisoryThrottlePath(stateDir, sessionId) {
+  const safeSessionId = isValidSessionId(sessionId) ? sessionId : '';
+  return safeSessionId
+    ? join(stateDir, 'sessions', safeSessionId, ADVISORY_THROTTLE_STATE_FILE)
+    : join(stateDir, ADVISORY_THROTTLE_STATE_FILE);
+}
+
+function advisoryThrottleKey(message) {
+  return createHash('sha256').update(message).digest('hex');
+}
+
+function normalizeAdvisoryThrottleState(state) {
+  if (!state || typeof state !== 'object' || !state.entries || typeof state.entries !== 'object') {
+    return { version: 1, entries: {} };
+  }
+  return { ...state, version: 1, entries: state.entries };
+}
+
+function pruneAdvisoryThrottleEntries(entries, nowMs, cooldownMs) {
+  const pruneWindowMs = Math.max(cooldownMs * 2, ADVISORY_THROTTLE_MIN_PRUNE_WINDOW_MS);
+  const freshEntries = Object.entries(entries)
+    .filter(([, entry]) => {
+      const last = Number(entry?.last_emitted_at_ms);
+      return Number.isFinite(last) && last <= nowMs && nowMs - last <= pruneWindowMs;
+    })
+    .sort(([, a], [, b]) => Number(b?.last_emitted_at_ms || 0) - Number(a?.last_emitted_at_ms || 0))
+    .slice(0, ADVISORY_THROTTLE_MAX_ENTRIES);
+  return Object.fromEntries(freshEntries);
+}
+
+function shouldEmitAdvisoryMessage(stateDir, sessionId, message) {
+  const cooldownMs = getAdvisoryThrottleCooldownMs();
+  if (!message || cooldownMs <= 0) return true;
+
+  const nowMs = getAdvisoryThrottleNowMs();
+  const throttlePath = getAdvisoryThrottlePath(stateDir, sessionId);
+  const key = advisoryThrottleKey(message);
+
+  try {
+    const state = normalizeAdvisoryThrottleState(readJsonFile(throttlePath));
+    state.entries = pruneAdvisoryThrottleEntries(state.entries, nowMs, cooldownMs);
+
+    const previous = state.entries[key];
+    const previousMs = Number(previous?.last_emitted_at_ms);
+    const shouldEmit = !Number.isFinite(previousMs) || previousMs > nowMs || nowMs - previousMs >= cooldownMs;
+
+    if (shouldEmit) {
+      state.entries[key] = {
+        last_emitted_at_ms: nowMs,
+        message,
+      };
+      state.entries = pruneAdvisoryThrottleEntries(state.entries, nowMs, cooldownMs);
+      state.updated_at = new Date(nowMs).toISOString();
+      mkdirSync(dirname(throttlePath), { recursive: true });
+      const tmpPath = `${throttlePath}.tmp`;
+      writeFileSync(tmpPath, JSON.stringify(state, null, 2), { mode: 0o600 });
+      renameSync(tmpPath, throttlePath);
+    }
+
+    return shouldEmit;
+  } catch {
+    // Fail open: advisory throttling must never silence safety output because
+    // state IO failed. The hook may repeat a nudge rather than risk hiding it.
+    return true;
+  }
+}
+
 const SESSION_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,255}$/;
 const MODE_STATE_FILES = [
   'autopilot-state.json',
   'ultrapilot-state.json',
   'ralph-state.json',
+  'ultragoal-state.json',
   'ultrawork-state.json',
   'ultraqa-state.json',
   'pipeline-state.json',
@@ -92,12 +412,81 @@ const MODE_STATE_FILES = [
   'omc-teams-state.json',
 ];
 const QUIET_LEVEL = getQuietLevel();
+const BUILT_IN_TASK_LIST_TOOL_NAMES = new Set([
+  'TaskCreate',
+  'TaskUpdate',
+  'TaskList',
+  'TaskGet',
+  'TaskOutput',
+  'TaskStop',
+]);
 
 function getQuietLevel() {
   const parsed = Number.parseInt(process.env.OMC_QUIET || '0', 10);
   if (Number.isNaN(parsed)) return 0;
   return Math.max(0, parsed);
 }
+
+/**
+ * Resolve the .omc root directory for a given starting directory.
+ *
+ * Resolution order (mirrors src/lib/worktree-paths.ts getOmcRoot):
+ *   1) OMC_STATE_DIR env — log a warning and fall through (full project-id
+ *      derivation lives in the TS layer; use resolveOmcStateRoot() for async
+ *      TS-backed OMC_STATE_DIR support in main()).
+ *   2) Walk up from startDir looking for a .omc-workspace marker file.
+ *      The first directory containing that file is the workspace anchor.
+ *   3) git rev-parse --show-toplevel from startDir.
+ *   4) Fallback to startDir itself.
+ *
+ * @param {string} startDir - Directory to resolve from (usually cwd from hook payload)
+ * @returns {string} Absolute path to the .omc root directory
+ */
+function resolveOmcRoot(startDir) {
+  const dir = startDir || process.cwd();
+
+  // 1) OMC_STATE_DIR: full project-id derivation is TS-only; warn and fall through.
+  if (process.env.OMC_STATE_DIR) {
+    process.stderr.write(
+      '[omc] OMC_STATE_DIR is set; resolveOmcRoot() falling through to workspace-marker ' +
+      'resolution. Use resolveOmcStateRoot() for full OMC_STATE_DIR support.\n'
+    );
+  }
+
+  // 2) Walk up looking for .omc-workspace marker
+  try {
+    let cursor = resolve(dir);
+    const home = (() => { try { return resolve(homedir()); } catch { return null; } })();
+    while (true) {
+      if (existsSync(join(cursor, '.omc-workspace'))) {
+        return join(cursor, '.omc');
+      }
+      const parent = dirname(cursor);
+      if (parent === cursor) break;
+      if (home && cursor === home) break;
+      cursor = parent;
+    }
+  } catch {
+    // walk failed — continue to git fallback
+  }
+
+  // 3) git rev-parse --show-toplevel
+  try {
+    const top = execSync('git rev-parse --show-toplevel', {
+      cwd: dir,
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    }).trim();
+    if (top) return join(top, '.omc');
+  } catch {
+    // not in a git repo — fall through
+  }
+
+  // 4) Fallback to startDir
+  return join(dir, '.omc');
+}
+
 
 /**
  * Resolve transcript path in worktree environments.
@@ -167,8 +556,8 @@ function extractJsonField(input, field, defaultValue = '') {
 }
 
 // Get agent tracking info from state file
-function getAgentTrackingInfo(directory) {
-  const trackingFile = join(directory, '.omc', 'state', 'subagent-tracking.json');
+function getAgentTrackingInfo(stateDir) {
+  const trackingFile = join(stateDir, 'subagent-tracking.json');
   try {
     if (existsSync(trackingFile)) {
       const data = JSON.parse(readFileSync(trackingFile, 'utf-8'));
@@ -180,13 +569,14 @@ function getAgentTrackingInfo(directory) {
 }
 
 // Get todo status from project-local todos only
-function getTodoStatus(directory) {
+async function getTodoStatus(directory) {
   let pending = 0;
   let inProgress = 0;
 
   // Check project-local todos
+  const omcRoot = await resolveOmcStateRoot(directory);
   const localPaths = [
-    join(directory, '.omc', 'todos.json'),
+    join(omcRoot, 'todos.json'),
     join(directory, '.claude', 'todos.json')
   ];
 
@@ -231,6 +621,156 @@ function readJsonFile(filePath) {
   }
 }
 
+const STATE_STALE_MS = 2 * 60 * 60 * 1000;
+const ULTRAGOAL_TERMINAL_PHASES = new Set([
+  'complete',
+  'completed',
+  'done',
+  'all-done',
+  'all_done',
+  'failed',
+  'cancelled',
+  'canceled',
+  'aborted',
+]);
+
+function isStaleModeState(state) {
+  if (!state || typeof state !== 'object') return true;
+  const timestamps = [state.last_checked_at, state.updated_at, state.started_at]
+    .filter(value => typeof value === 'string' && value.length > 0)
+    .map(value => new Date(value).getTime())
+    .filter(value => Number.isFinite(value));
+  if (timestamps.length === 0) return true;
+  return Date.now() - Math.max(...timestamps) > STATE_STALE_MS;
+}
+
+function normalizeText(value) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+}
+
+function normalizePhase(value) {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : '';
+}
+
+function isUltragoalTerminalState(state, directory) {
+  if (!state || typeof state !== 'object') return true;
+  if (state.active === false) return true;
+  if (typeof state.completed_at === 'string' && state.completed_at.length > 0) return true;
+  if (state.all_done === true || state.done === true) return true;
+
+  const phase = normalizePhase(state.current_phase ?? state.phase ?? state.status);
+  if (phase && ULTRAGOAL_TERMINAL_PHASES.has(phase)) return true;
+
+  const plan = readJsonFile(join(directory, '.omc', 'ultragoal', 'goals.json'));
+  if (!plan || typeof plan !== 'object') return false;
+  if (plan.aggregateCompletion?.status === 'complete') return true;
+  if (!Array.isArray(plan.goals) || plan.goals.length === 0) return false;
+  return plan.goals.every(goal => {
+    const status = normalizePhase(goal?.status);
+    return status === 'complete' || status === 'review_blocked';
+  });
+}
+
+function readSessionModeState(stateDir, mode, sessionId) {
+  const filename = `${mode}-state.json`;
+  const safeSessionId = isValidSessionId(sessionId) ? sessionId : '';
+  const candidates = safeSessionId
+    ? [join(stateDir, 'sessions', safeSessionId, filename), join(stateDir, filename)]
+    : [join(stateDir, filename)];
+  for (const statePath of candidates) {
+    const state = readJsonFile(statePath);
+    if (!state) continue;
+    if (safeSessionId && state.session_id && state.session_id !== safeSessionId) continue;
+    return { state, path: statePath };
+  }
+  return { state: null, path: '' };
+}
+
+function getExpectedUltragoalObjective(state, directory) {
+  const candidates = [
+    state?.claude_goal_objective,
+    state?.claudeGoalObjective,
+    state?.codex_objective,
+    state?.codexObjective,
+    state?.goal_objective,
+    state?.goalObjective,
+    state?.objective,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+
+  const plan = readJsonFile(join(directory, '.omc', 'ultragoal', 'goals.json'));
+  if (typeof plan?.claudeObjective === 'string' && plan.claudeObjective.trim()) return plan.claudeObjective.trim();
+  if (typeof plan?.aggregateCompletion?.objective === 'string' && plan.aggregateCompletion.objective.trim()) {
+    return plan.aggregateCompletion.objective.trim();
+  }
+  const activeGoal = Array.isArray(plan?.goals) ? plan.goals.find(goal => goal?.status === 'in_progress') : null;
+  if (typeof activeGoal?.objective === 'string' && activeGoal.objective.trim()) return activeGoal.objective.trim();
+  return '';
+}
+
+function extractClaudeGoalSnapshot(data) {
+  const candidates = [
+    data.goal,
+    data.claude_goal,
+    data.claudeGoal,
+    data.goal_state,
+    data.goalState,
+    data.codex_goal,
+    data.codexGoal,
+    data.context?.goal,
+    data.context?.claude_goal,
+  ];
+  for (const candidate of candidates) {
+    const goal = candidate?.goal && typeof candidate.goal === 'object' ? candidate.goal : candidate;
+    if (goal && typeof goal === 'object') {
+      const objective = goal.objective ?? goal.condition ?? goal.prompt ?? goal.description;
+      const status = goal.status ?? goal.state;
+      if (typeof objective === 'string' || typeof status === 'string') {
+        return { objective: typeof objective === 'string' ? objective : '', status: typeof status === 'string' ? status : '' };
+      }
+    }
+  }
+  return null;
+}
+
+
+function isUltragoalBootstrapTool(toolName, toolInput) {
+  if (toolName === 'Skill' && extractSkillName(toolInput) === 'ultragoal') return true;
+  if (toolName !== 'Bash') return false;
+  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  return /(?:^|[;&|\s])(?:omc|oh-my-claudecode)\s+ultragoal\s+(?:create(?:-goals)?|create-goals|complete(?:-goals)?|complete-goals|next|start-next|status)\b/.test(command);
+}
+
+function evaluateUltragoalPreToolEnforcement(stateDir, directory, sessionId, data) {
+  if (process.env.ALLOW_ULTRAGOAL_WITHOUT_GOAL === '1') return null;
+  const toolName = data.tool_name || data.toolName || '';
+  const toolInput = data.toolInput || data.tool_input || {};
+  if (isUltragoalBootstrapTool(toolName, toolInput)) return null;
+  const loaded = readSessionModeState(stateDir, 'ultragoal', sessionId);
+  const state = loaded.state;
+  if (!state?.active) return null;
+  if (isStaleModeState(state)) return null;
+  if (state.project_path && resolve(String(state.project_path)) !== resolve(directory)) return null;
+  if (isUltragoalTerminalState(state, directory)) return null;
+
+  const expected = getExpectedUltragoalObjective(state, directory);
+  const actual = extractClaudeGoalSnapshot(data);
+  const actualObjective = normalizeText(actual?.objective);
+  const expectedObjective = normalizeText(expected);
+  const status = normalizePhase(actual?.status);
+  const objectiveMatches = Boolean(actualObjective && expectedObjective && actualObjective === expectedObjective);
+  const activeStatus = status === '' || status === 'active' || status === 'in_progress' || status === 'running';
+
+  if (objectiveMatches && activeStatus) return null;
+
+  const mismatch = actualObjective
+    ? `current Claude /goal appears unrelated: "${actual.objective}".`
+    : 'no active Claude /goal snapshot was visible to the hook.';
+  return `[ULTRAGOAL /GOAL REQUIRED] Active ultragoal state requires the matching Claude /goal before tools run; ${mismatch} Activate /goal with the ultragoal objective, or set ALLOW_ULTRAGOAL_WITHOUT_GOAL=1 to bypass this guard intentionally. Expected objective: ${expected || '<record one in ultragoal-state.json or .omc/ultragoal/goals.json>'}`;
+}
+
 function hasActiveJsonMode(stateDir, { allowSessionTagged = false } = {}) {
   for (const file of MODE_STATE_FILES) {
     const state = readJsonFile(join(stateDir, file));
@@ -252,9 +792,7 @@ function hasActiveSwarmMode(stateDir, { allowSessionTagged = false } = {}) {
   return true;
 }
 
-function hasActiveMode(directory, sessionId) {
-  const stateDir = join(directory, '.omc', 'state');
-
+function hasActiveMode(stateDir, sessionId) {
   if (isValidSessionId(sessionId)) {
     const sessionStateDir = join(stateDir, 'sessions', sessionId);
     return (
@@ -288,12 +826,12 @@ function mapCanonicalTeamPhaseToStage(rawPhase) {
   }
 }
 
-function readCanonicalActiveTeamState(directory, sessionId) {
+function readCanonicalActiveTeamState(stateDir, sessionId) {
   if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) {
     return null;
   }
 
-  const teamRoot = join(directory, '.omc', 'state', 'team');
+  const teamRoot = join(stateDir, 'team');
   if (!existsSync(teamRoot)) {
     return null;
   }
@@ -340,17 +878,17 @@ function readCanonicalActiveTeamState(directory, sessionId) {
  * Reads team-state.json from session-scoped or legacy paths and falls back
  * to canonical team state when the coarse file drifts or disappears.
  */
-function getActiveTeamState(directory, sessionId) {
+function getActiveTeamState(stateDir, sessionId) {
   const paths = [];
   let coarseState = null;
 
   // Session-scoped path (preferred)
   if (sessionId && SESSION_ID_PATTERN.test(sessionId)) {
-    paths.push(join(directory, '.omc', 'state', 'sessions', sessionId, 'team-state.json'));
+    paths.push(join(stateDir, 'sessions', sessionId, 'team-state.json'));
   }
 
   // Legacy path
-  paths.push(join(directory, '.omc', 'state', 'team-state.json'));
+  paths.push(join(stateDir, 'team-state.json'));
 
   for (const statePath of paths) {
     const state = readJsonFile(statePath);
@@ -366,7 +904,7 @@ function getActiveTeamState(directory, sessionId) {
     }
   }
 
-  const canonical = readCanonicalActiveTeamState(directory, sessionId);
+  const canonical = readCanonicalActiveTeamState(stateDir, sessionId);
   if (canonical && canonical.active === true) {
     return canonical;
   }
@@ -375,7 +913,7 @@ function getActiveTeamState(directory, sessionId) {
 }
 
 // Generate agent spawn message with metadata
-function generateAgentSpawnMessage(toolInput, directory, todoStatus, sessionId) {
+function generateAgentSpawnMessage(toolInput, stateDir, todoStatus, sessionId) {
   if (!toolInput || typeof toolInput !== 'object') {
     if (QUIET_LEVEL >= 2) return '';
     return `${todoStatus}Launch multiple agents in parallel when tasks are independent. Use run_in_background for long operations.`;
@@ -385,12 +923,12 @@ function generateAgentSpawnMessage(toolInput, directory, todoStatus, sessionId) 
   const model = toolInput.model || 'inherit';
   const desc = toolInput.description || '';
   const bg = toolInput.run_in_background ? ' [BACKGROUND]' : '';
-  const tracking = getAgentTrackingInfo(directory);
+  const tracking = getAgentTrackingInfo(stateDir);
 
   // Team-routing enforcement (issue #1006):
   // When team state is active and Task is called WITHOUT team_name,
   // inject a redirect message to use team agents instead of subagents.
-  const teamState = getActiveTeamState(directory, sessionId);
+  const teamState = getActiveTeamState(stateDir, sessionId);
   if (teamState && !toolInput.team_name) {
     const teamName = teamState.team_name || teamState.teamName || 'team';
     return `[TEAM ROUTING REQUIRED] Team "${teamName}" is active but you are spawning a regular subagent ` +
@@ -449,7 +987,7 @@ const SKILL_PROTECTION_CONFIGS = {
 
 const SKILL_PROTECTION_MAP = {
   // === Already have mode state → no additional protection ===
-  autopilot: 'none', ralph: 'none', ultrawork: 'none', team: 'none',
+  autopilot: 'none', ralph: 'none', ultragoal: 'none', ultrawork: 'none', team: 'none',
   'omc-teams': 'none', ultraqa: 'none', cancel: 'none',
 
   // === Instant / read-only → no protection needed ===
@@ -519,7 +1057,7 @@ function extractSkillName(toolInput) {
   return normalized.includes(':') ? normalized.split(':').at(-1).toLowerCase() : normalized.toLowerCase();
 }
 
-function writeSkillActiveState(directory, skillName, sessionId, rawSkillName) {
+function writeSkillActiveState(stateDir, skillName, sessionId, rawSkillName) {
   const protection = getSkillProtectionLevel(skillName, rawSkillName);
   if (protection === 'none') return;
 
@@ -527,7 +1065,6 @@ function writeSkillActiveState(directory, skillName, sessionId, rawSkillName) {
   const now = new Date().toISOString();
   const normalized = (skillName || '').toLowerCase().replace(/^oh-my-claudecode:/, '');
 
-  const stateDir = join(directory, '.omc', 'state');
   const safeSessionId = sessionId && SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
   const targetDir = safeSessionId
     ? join(stateDir, 'sessions', safeSessionId)
@@ -582,8 +1119,7 @@ function writeSkillActiveState(directory, skillName, sessionId, rawSkillName) {
 }
 
 
-function clearAwaitingConfirmationFlag(directory, stateName, sessionId) {
-  const stateDir = join(directory, '.omc', 'state');
+function clearAwaitingConfirmationFlag(stateDir, stateName, sessionId) {
   const safeSessionId = sessionId && SESSION_ID_PATTERN.test(sessionId) ? sessionId : '';
   const paths = [
     safeSessionId ? join(stateDir, 'sessions', safeSessionId, `${stateName}-state.json`) : null,
@@ -605,20 +1141,23 @@ function clearAwaitingConfirmationFlag(directory, stateName, sessionId) {
   }
 }
 
-function confirmSkillModeStates(directory, skillName, sessionId) {
+function confirmSkillModeStates(stateDir, skillName, sessionId) {
   switch (skillName) {
     case 'ralph':
-      clearAwaitingConfirmationFlag(directory, 'ralph', sessionId);
-      clearAwaitingConfirmationFlag(directory, 'ultrawork', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ralph', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ultrawork', sessionId);
+      break;
+    case 'ultragoal':
+      clearAwaitingConfirmationFlag(stateDir, 'ultragoal', sessionId);
       break;
     case 'ultrawork':
-      clearAwaitingConfirmationFlag(directory, 'ultrawork', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ultrawork', sessionId);
       break;
     case 'autopilot':
-      clearAwaitingConfirmationFlag(directory, 'autopilot', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'autopilot', sessionId);
       break;
     case 'ralplan':
-      clearAwaitingConfirmationFlag(directory, 'ralplan', sessionId);
+      clearAwaitingConfirmationFlag(stateDir, 'ralplan', sessionId);
       break;
     default:
       break;
@@ -656,6 +1195,12 @@ async function main() {
     const toolName = extractJsonField(input, 'tool_name') || extractJsonField(input, 'toolName', 'unknown');
     const directory = extractJsonField(input, 'cwd') || extractJsonField(input, 'directory', process.cwd());
 
+    // Resolve the .omc state root once, honoring OMC_STATE_DIR.
+    // All helpers receive stateDir so they stay in sync with the centralized
+    // resolver used by session-start.mjs and persistent-mode (issue #2518, PR #2532).
+    const omcRoot = await resolveOmcStateRoot(directory);
+    const stateDir = join(omcRoot, 'state');
+
     // Record Skill invocations to flow trace
     let data = {};
     try { data = JSON.parse(input); } catch {}
@@ -673,8 +1218,8 @@ async function main() {
         // Pass rawSkillName to distinguish OMC skills from project custom skills (issue #1581)
         const rawSkill = toolInput.skill || toolInput.skill_name || toolInput.skillName || toolInput.command || '';
         const rawSkillName = typeof rawSkill === 'string' && rawSkill.trim() ? rawSkill.trim() : undefined;
-        writeSkillActiveState(directory, skillName, sid, rawSkillName);
-        confirmSkillModeStates(directory, skillName, sid);
+        writeSkillActiveState(stateDir, skillName, sid, rawSkillName);
+        confirmSkillModeStates(stateDir, skillName, sid);
       }
     }
 
@@ -684,7 +1229,21 @@ async function main() {
         : typeof data.sessionId === 'string'
           ? data.sessionId
           : '';
-    const modeActive = hasActiveMode(directory, sessionId);
+
+    const ultragoalDenyReason = evaluateUltragoalPreToolEnforcement(stateDir, directory, sessionId, data);
+    if (ultragoalDenyReason) {
+      console.log(JSON.stringify({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: ultragoalDenyReason
+        }
+      }));
+      return;
+    }
+
+    const modeActive = hasActiveMode(stateDir, sessionId);
 
     // Force-inherit check: deny Task/Agent calls with invalid model param when forceInherit is
     // enabled (Bedrock, Vertex, CC Switch, etc.) - issues #1135, #1201, #1767, #1868
@@ -712,18 +1271,17 @@ async function main() {
             : claudeModel || anthropicModel;
 
         if (toolModel) {
-          // Allow tier aliases (sonnet/opus/haiku) when OMC_SUBAGENT_MODEL is a valid
-          // provider-specific ID. The Agent tool schema only accepts these short aliases —
-          // full Bedrock/Vertex IDs are rejected by the tool schema, so tier aliases + routing
-          // via OMC_SUBAGENT_MODEL is the only viable explicit-model escape hatch.
-          const subagentModelForAlias = process.env.OMC_SUBAGENT_MODEL || '';
-          if (isTierAlias(toolModel) && isSubagentSafeModelId(subagentModelForAlias)) {
-            // fall through to continue — tier alias is safe when OMC_SUBAGENT_MODEL is a valid provider-specific ID
+          // Allow tier aliases (sonnet/opus/haiku) when a subagent-safe model can be
+          // resolved for that tier. Resolution chain: OMC_SUBAGENT_MODEL (global override)
+          // → CLAUDE_CODE_BEDROCK_*_MODEL → ANTHROPIC_DEFAULT_*_MODEL.
+          if (isTierAlias(toolModel) && resolveTierAliasToSafeModel(toolModel)) {
+            // fall through to continue — tier alias resolves to a safe provider-specific ID
           } else if (!isSubagentSafeModelId(toolModel)) {
-            const subagentModel = process.env.OMC_SUBAGENT_MODEL || '';
-            const guidance = subagentModel
-              ? `Pass model="${subagentModel}" (your configured OMC_SUBAGENT_MODEL value).`
-              : `Remove the \`model\` parameter, or set OMC_SUBAGENT_MODEL=<valid-bedrock-id> and pass that value explicitly.`;
+            const tierUpper = isTierAlias(toolModel) ? toolModel.toUpperCase() : '';
+            const derivedTier = tierUpper || (normalizeToCcAlias(toolModel) || '').toUpperCase();
+            const guidance = derivedTier
+              ? `Set ANTHROPIC_DEFAULT_${derivedTier}_MODEL=<valid-bedrock-id> in settings.json env, or set OMC_SUBAGENT_MODEL as a global override.`
+              : `Remove the \`model\` parameter, or set ANTHROPIC_DEFAULT_SONNET_MODEL=<valid-bedrock-id> in settings.json env.`;
             console.log(JSON.stringify({
               continue: true,
               hookSpecificOutput: {
@@ -741,10 +1299,11 @@ async function main() {
           // Anthropic model ID (e.g. claude-sonnet-4-6) which is invalid on Bedrock.
           // Fix: pass a tier alias (sonnet/haiku/opus). The Agent tool schema only accepts
           // tier aliases for the model param — full Bedrock IDs are rejected by the schema.
-          // OMC_SUBAGENT_MODEL is used only for guidance; derive the tier alias from it.
-          const subagentModel = process.env.OMC_SUBAGENT_MODEL || '';
-          const tierAlias = normalizeToCcAlias(subagentModel) || normalizeToCcAlias(sessionModel) || 'sonnet';
-          const suggestion = `Pass model="${tierAlias}" explicitly on this ${toolName} call — tier aliases resolve cleanly on Bedrock.`;
+          const tierAlias = normalizeToCcAlias(sessionModel) || 'sonnet';
+          const resolvedSafe = resolveTierAliasToSafeModel(tierAlias);
+          const suggestion = resolvedSafe
+            ? `Pass model="${tierAlias}" explicitly on this ${toolName} call — tier aliases resolve cleanly on Bedrock.`
+            : `Pass model="${tierAlias}" explicitly on this ${toolName} call, and set ANTHROPIC_DEFAULT_${tierAlias.toUpperCase()}_MODEL=<valid-bedrock-id> in settings.json env.`;
           console.log(JSON.stringify({
             continue: true,
             hookSpecificOutput: {
@@ -762,20 +1321,15 @@ async function main() {
         // with 400. Detect it here and deny with guidance to retry with an explicit tier alias.
         if (!toolModel && toolInput.subagent_type) {
           const agentDefModel = readAgentDefinitionModel(toolInput.subagent_type);
-          const subagentModel = process.env.OMC_SUBAGENT_MODEL || '';
-          // Only deny when OMC_SUBAGENT_MODEL is configured as a valid provider-specific ID.
+          // Only deny when a safe routing target exists for the derived tier alias.
           // Without a routing target the tier-alias escape hatch doesn't exist, so blocking
           // would strand Claude in a retry loop with no viable path forward.
+          const defTierAlias = agentDefModel ? normalizeToCcAlias(agentDefModel) : null;
+          const resolvedModel = defTierAlias ? resolveTierAliasToSafeModel(defTierAlias) : '';
+          const hasSafeRouting = !!resolvedModel;
           if (agentDefModel && !isSubagentSafeModelId(agentDefModel) && !isTierAlias(agentDefModel)
-              && isSubagentSafeModelId(subagentModel)) {
-            const tierAlias = normalizeToCcAlias(agentDefModel);
-            const guidance = tierAlias
-              ? (subagentModel
-                  ? `Add model="${tierAlias}" to this ${toolName} call — OMC will route it through OMC_SUBAGENT_MODEL (${subagentModel}).`
-                  : `Add model="${tierAlias}" to this ${toolName} call and set OMC_SUBAGENT_MODEL=<valid-bedrock-id>.`)
-              : (subagentModel
-                  ? `Add model="${subagentModel}" (your configured OMC_SUBAGENT_MODEL) explicitly to this ${toolName} call.`
-                  : `Set OMC_SUBAGENT_MODEL=<valid-bedrock-id> and add it as the model parameter on this ${toolName} call.`);
+              && hasSafeRouting) {
+            const guidance = `Add model="${defTierAlias}" to this ${toolName} call — tier aliases resolve to configured provider models (${resolvedModel}).`;
             const agentType = (toolInput.subagent_type).replace(/^oh-my-claudecode:/, '');
             console.log(JSON.stringify({
               continue: true,
@@ -818,9 +1372,34 @@ async function main() {
       }
     }
 
-    const todoStatus = getTodoStatus(directory);
+    const todoStatus = await getTodoStatus(directory);
 
-    if (toolName === 'Task' || toolName === 'TaskCreate' || toolName === 'TaskUpdate') {
+    // Force-agent-delegation: symmetric to evaluateAgentHeavyPreflight. Where
+    // preflight blocks Task/Agent spawning when context is exhausted, this
+    // evaluator blocks raw Read/Edit/Write/Grep/Glob when configured rules
+    // indicate the work should be delegated to a specialised agent. Default OFF
+    // — only fires when `.omc/config.json` has `routing.forceDelegation.enforce`.
+    const delegationBlock = evaluateForceAgentDelegation({
+      toolName,
+      stateDir,
+      loadOmcConfig,
+    });
+    if (delegationBlock) {
+      // Force-delegation preflight returns `{ decision: 'block', reason }` to
+      // match the agent-heavy preflight contract. Translate to the
+      // Claude Code hookSpecificOutput shape (`permissionDecision: 'deny'`).
+      console.log(JSON.stringify({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: delegationBlock.reason,
+        },
+      }));
+      return;
+    }
+
+    if (toolName === 'Task' || toolName === 'Agent') {
       const rawTranscriptPath = data.transcript_path || data.transcriptPath || '';
       const transcriptPath = resolveTranscriptPath(rawTranscriptPath, directory);
       const preflightBlock = evaluateAgentHeavyPreflight({
@@ -833,15 +1412,27 @@ async function main() {
       }
     }
 
+    const slopWarning = generateSlopWarning(data, toolName);
     let message;
-    if (toolName === 'Task' || toolName === 'TaskCreate' || toolName === 'TaskUpdate') {
+    if (BUILT_IN_TASK_LIST_TOOL_NAMES.has(toolName)) {
+      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      return;
+    }
+
+    if (toolName === 'Task' || toolName === 'Agent') {
       const toolInput = data.toolInput || data.tool_input || null;
-      message = generateAgentSpawnMessage(toolInput, directory, todoStatus, sessionId);
+      message = generateAgentSpawnMessage(toolInput, stateDir, todoStatus, sessionId);
     } else {
       message = generateMessage(toolName, todoStatus, modeActive);
     }
+    message = combineHookMessages(slopWarning, message);
 
     if (!message) {
+      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+      return;
+    }
+
+    if (!shouldEmitAdvisoryMessage(stateDir, sessionId, message)) {
       console.log(JSON.stringify({ continue: true, suppressOutput: true }));
       return;
     }

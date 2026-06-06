@@ -11,7 +11,9 @@ import {
   writeStdinCache,
   readStdinCache,
   getContextPercent,
+  getModelId,
   getModelName,
+  getRateLimitsFromStdin,
   stabilizeContextPercent,
 } from "./stdin.js";
 import { parseTranscript } from "./transcript.js";
@@ -28,16 +30,19 @@ import {
   readPrdStateForHud,
   readAutopilotStateForHud,
 } from "./omc-state.js";
-import { getUsage } from "./usage-api.js";
+import { getUsage, getSubscriptionInfo } from "./usage-api.js";
 import { executeCustomProvider } from "./custom-rate-provider.js";
 import { render } from "./render.js";
 import { detectApiKeySource } from "./elements/api-key-source.js";
 import { refreshMissionBoardState } from "./mission-board.js";
 import { sanitizeOutput } from "./sanitize.js";
+import { estimatePayloadFromTranscriptPath } from "./payload-estimate.js";
 import type {
   HudRenderContext,
+  RateLimits,
   SessionHealth,
   SessionSummaryState,
+  UsageResult,
 } from "./types.js";
 import { getRuntimePackageVersion } from "../lib/version.js";
 import { compareVersions } from "../features/auto-update.js";
@@ -48,11 +53,10 @@ import {
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { access, readFile } from "fs/promises";
 import { join, basename, dirname } from "path";
-import { homedir } from "os";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { getOmcRoot } from "../lib/worktree-paths.js";
-import { getClaudeConfigDir } from "../utils/config-dir.js";
+import { getClaudeConfigDir, getUpdateCheckCachePath } from "../utils/config-dir.js";
 
 /**
  * Extract session ID (UUID) from a transcript path.
@@ -61,6 +65,23 @@ function extractSessionIdFromPath(transcriptPath: string): string | null {
   if (!transcriptPath) return null;
   const match = transcriptPath.match(/([0-9a-f-]{36})(?:\.jsonl)?$/i);
   return match ? match[1] : null;
+}
+
+function mergeStdinRateLimits(
+  stdinRateLimits: RateLimits | null,
+  usageResult: UsageResult | null,
+): UsageResult | null {
+  if (!stdinRateLimits) {
+    return usageResult;
+  }
+
+  return {
+    ...(usageResult ?? {}),
+    rateLimits: {
+      ...(usageResult?.rateLimits ?? {}),
+      ...stdinRateLimits,
+    },
+  };
 }
 
 /**
@@ -339,9 +360,15 @@ async function main(watchMode = false, skipInit = false): Promise<void> {
       writeHudState(stateToWrite, cwd, currentSessionId ?? undefined);
     }
 
-    // Fetch rate limits from OAuth API (if available)
+    // Merge Claude Code stdin generic buckets with API/cache-specific fields.
+    // Stdin owns fresher five-hour/seven-day values, while getUsage() may provide
+    // Sonnet/Opus weekly, monthly, extra, stale, and error metadata.
+    const stdinRateLimits = getRateLimitsFromStdin(stdin);
+    const usageResult = config.elements.rateLimits === false ? null : await getUsage();
     const rateLimitsResult =
-      config.elements.rateLimits !== false ? await getUsage() : null;
+      config.elements.rateLimits === false
+        ? null
+        : mergeStdinRateLimits(stdinRateLimits, usageResult);
 
     // Fetch custom rate limit buckets (if configured)
     const customBuckets =
@@ -366,7 +393,7 @@ async function main(watchMode = false, skipInit = false): Promise<void> {
     }
     // Async file read to avoid blocking event loop (Issue #1273)
     try {
-      const updateCacheFile = join(homedir(), ".omc", "update-check.json");
+      const updateCacheFile = getUpdateCheckCachePath();
       await access(updateCacheFile);
       const content = await readFile(updateCacheFile, "utf-8");
       const cached = JSON.parse(content);
@@ -416,12 +443,24 @@ async function main(watchMode = false, skipInit = false): Promise<void> {
       ? await refreshMissionBoardState(cwd, config.missionBoard)
       : null;
     const contextPercent = getContextPercent(stdin);
+    const payloadEstimate = estimatePayloadFromTranscriptPath(resolvedTranscriptPath);
+
+    // Read subscription info for enterprise detection (best-effort).
+    // Rate-limit rendering must not depend on this metadata being present.
+    const subscriptionInfo = (() => {
+      try {
+        return getSubscriptionInfo() ?? { subscriptionType: null, rateLimitTier: null };
+      } catch {
+        return { subscriptionType: null, rateLimitTier: null };
+      }
+    })();
 
     // Build render context
     const context: HudRenderContext = {
       contextPercent,
       contextDisplayScope: currentSessionId ?? cwd,
       modelName: getModelName(stdin),
+      modelId: getModelId(stdin),
       ralph,
       ultrawork,
       prd,
@@ -450,11 +489,14 @@ async function main(watchMode = false, skipInit = false): Promise<void> {
       apiKeySource: config.elements.apiKeySource
         ? detectApiKeySource(cwd)
         : null,
+      subscriptionType: subscriptionInfo.subscriptionType,
+      rateLimitTier: subscriptionInfo.rateLimitTier,
       profileName: process.env.CLAUDE_CONFIG_DIR
         ? basename(process.env.CLAUDE_CONFIG_DIR).replace(/^\./, "")
         : null,
       sessionSummary,
       lastToolName: transcriptData.lastToolName,
+      payloadEstimate,
     };
 
     // Debug: log data if OMC_DEBUG is set
@@ -469,7 +511,10 @@ async function main(watchMode = false, skipInit = false): Promise<void> {
       );
     }
 
-    // autoCompact: write trigger file when context exceeds threshold
+    // autoCompact: write trigger file when token context exceeds threshold.
+    // Payload pressure is warning-only for now because statusline hooks can
+    // estimate from local transcript artifacts but do not receive Claude Code's
+    // exact serialized API request body.
     // A companion hook can read this file to inject a /compact suggestion.
     if (
       config.contextLimitWarning.autoCompact &&

@@ -47,9 +47,13 @@ export declare function resolveSupportedShellAffinity(shellPath?: string): Worke
  *   5. Fallback: /bin/sh
  */
 export declare function buildWorkerLaunchSpec(shellPath?: string): WorkerLaunchSpec;
+export interface WaitForShellReadyOptions {
+    timeoutMs?: number;
+    pollIntervalMs?: number;
+}
 export declare function buildWorkerStartCommand(config: WorkerPaneConfig): string;
 /** Validate tmux is available. Throws with install instructions if not. */
-export declare function validateTmux(): void;
+export declare function validateTmux(hasTmuxContext?: boolean): void;
 /** Sanitize name to prevent tmux command injection (alphanum + hyphen only) */
 export declare function sanitizeName(name: string): string;
 /** Build session name: "omc-team-{teamName}-{workerName}" */
@@ -65,13 +69,6 @@ export declare function killSession(teamName: string, workerName: string): void;
 export declare function isSessionAlive(teamName: string, workerName: string): boolean;
 /** List all active worker sessions for a team */
 export declare function listActiveSessions(teamName: string): string[];
-/**
- * Spawn bridge in session via config temp file.
- *
- * Instead of passing JSON via tmux send-keys (brittle quoting), the caller
- * writes config to a temp file and passes --config flag:
- *   node dist/team/bridge-entry.js --config /tmp/omc-bridge-{worker}.json
- */
 export declare function spawnBridgeInSession(tmuxSession: string, bridgeScriptPath: string, configFilePath: string): void;
 /**
  * Create a tmux team topology for a team leader/worker layout.
@@ -81,10 +78,10 @@ export declare function spawnBridgeInSession(tmuxSession: string, bridgeScriptPa
  * is true, creates a detached dedicated tmux window first and then splits worker
  * panes there.
  *
- * When running inside cmux (CMUX_SURFACE_ID without TMUX) or a plain terminal,
- * falls back to a detached tmux session because the current surface cannot be
- * targeted as a normal tmux pane/window. Returns sessionName in "session:window"
- * form.
+ * When running inside cmux (CMUX_SURFACE_ID without TMUX), creates native
+ * cmux splits from the current surface. When running in a plain terminal, falls
+ * back to a detached tmux session. Returns sessionName in "session:window" form
+ * for tmux and "cmux:<workspace>" form for cmux.
  *
  * Layout: leader pane on the left, worker panes stacked vertically on the right.
  * IMPORTANT: Uses pane IDs (%N format) not pane indices for stable targeting.
@@ -96,6 +93,10 @@ export declare function createTeamSession(teamName: string, workerCount: number,
  * Worker startup: env OMC_TEAM_WORKER={teamName}/workerName shell -lc "exec agentCmd"
  */
 export declare function spawnWorkerInPane(sessionName: string, paneId: string, config: WorkerPaneConfig): Promise<void>;
+export declare function captureTeamPane(paneId: string): Promise<string>;
+export declare function sendTeamPaneKey(paneId: string, key: string): Promise<void>;
+export declare function killTeamPane(paneId: string): Promise<void>;
+export declare function paneHasTrustPrompt(captured: string): boolean;
 export declare function paneHasActiveTask(captured: string): boolean;
 export declare function paneLooksReady(captured: string): boolean;
 export interface WaitForPaneReadyOptions {
@@ -129,6 +130,8 @@ export declare function injectToLeaderPane(sessionName: string, leaderPaneId: st
  * Check if a worker pane is still alive.
  * Uses pane ID for stable targeting (not pane index).
  */
+export type WorkerPaneLiveness = 'alive' | 'dead' | 'unknown';
+export declare function getWorkerLiveness(paneId: string): Promise<WorkerPaneLiveness>;
 export declare function isWorkerAlive(paneId: string): Promise<boolean>;
 /**
  * Graceful-then-force kill of worker panes.

@@ -19,11 +19,11 @@ export const LSP_SERVERS = {
         installHint: 'npm install -g typescript-language-server typescript'
     },
     python: {
-        name: 'Python Language Server (pylsp)',
-        command: 'pylsp',
-        args: [],
+        name: 'Python Language Server (ty)',
+        command: 'ty',
+        args: ['server'],
         extensions: ['.py', '.pyw'],
-        installHint: 'pip install python-lsp-server'
+        installHint: 'Install ty from https://github.com/astral-sh/ty'
     },
     rust: {
         name: 'Rust Analyzer',
@@ -73,6 +73,13 @@ export const LSP_SERVERS = {
         args: ['--stdio'],
         extensions: ['.css', '.scss', '.less'],
         installHint: 'npm install -g vscode-langservers-extracted'
+    },
+    vue: {
+        name: 'Vue Language Server (Volar)',
+        command: 'vue-language-server',
+        args: ['--stdio'],
+        extensions: ['.vue'],
+        installHint: 'npm install -g @vue/language-server'
     },
     yaml: {
         name: 'YAML Language Server',
@@ -200,6 +207,7 @@ export function getServerForLanguage(language) {
         'css': 'css',
         'scss': 'css',
         'less': 'css',
+        'vue': 'vue',
         'yaml': 'yaml',
         'php': 'php',
         'phtml': 'php',

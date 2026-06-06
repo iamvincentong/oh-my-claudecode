@@ -4,22 +4,19 @@
  * OMC Cross-platform hook runner (run.cjs)
  *
  * Uses process.execPath (the Node binary already running this script) to spawn
- * the target .mjs hook, bypassing PATH / shell discovery issues.
- *
- * Replaces the `sh + find-node.sh` chain that fails on Windows because
- * /usr/bin/sh is a PE32+ binary the OS refuses to execute natively.
+ * the target .mjs hook. The shipped plugin manifest launches this runner directly with
+ * `node ... run.cjs` so native Windows can spawn hooks without /bin/sh.
+ * Once Node has launched this runner, process.execPath is used for the
+ * hook-script handoff.
  * Fixes issues #909, #899, #892, #869.
  *
- * Usage (from hooks.json, after setup patches the absolute node path in):
- *   /abs/path/to/node "${CLAUDE_PLUGIN_ROOT}/scripts/run.cjs" \
+ * Manifest usage (from hooks.json):
+ *   node "${CLAUDE_PLUGIN_ROOT}/scripts/run.cjs" \
  *       "${CLAUDE_PLUGIN_ROOT}/scripts/<hook>.mjs" [args...]
- *
- * During post-install setup, the leading `node` token is replaced with
- * process.execPath so nvm/fnm users and Windows users all get the right binary.
  */
 
 const { spawnSync } = require('child_process');
-const { existsSync, realpathSync } = require('fs');
+const { existsSync, readFileSync, realpathSync } = require('fs');
 const { join, basename, dirname } = require('path');
 
 const target = process.argv[2];
@@ -93,12 +90,52 @@ function resolveTarget(targetPath) {
   return null;
 }
 
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function flattenHookEntries(rawHooks) {
+  if (!rawHooks || typeof rawHooks !== 'object') return [];
+  return Object.values(rawHooks).flatMap((entries) => Array.isArray(entries) ? entries : []);
+}
+
+function resolveHookTimeoutMs(targetPath, extraArgs) {
+  const pluginRoot = dirname(dirname(targetPath));
+  const hooksJsonPath = join(pluginRoot, 'hooks', 'hooks.json');
+  if (!existsSync(hooksJsonPath)) return null;
+
+  try {
+    const hooksJson = JSON.parse(readFileSync(hooksJsonPath, 'utf-8'));
+    const scriptName = basename(targetPath);
+    const scriptPattern = new RegExp(`[/\\\\]scripts[/\\\\]${escapeRegex(scriptName)}(?:\\s|$)`);
+    const argNeedles = extraArgs.filter((arg) => typeof arg === 'string' && arg.length > 0);
+
+    for (const entry of flattenHookEntries(hooksJson?.hooks)) {
+      const hooks = Array.isArray(entry?.hooks) ? entry.hooks : [];
+      for (const hook of hooks) {
+        const command = typeof hook?.command === 'string' ? hook.command : '';
+        const timeout = Number(hook?.timeout);
+        if (!scriptPattern.test(command)) continue;
+        if (!Number.isFinite(timeout) || timeout <= 0) continue;
+        if (!argNeedles.every((arg) => command.includes(` ${arg}`) || command.endsWith(` ${arg}`))) continue;
+        return Math.floor(timeout * 1000);
+      }
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 const resolved = resolveTarget(target);
 if (!resolved) {
   // Target not found anywhere — exit cleanly so hooks are never blocked.
   // This is the graceful fallback for stale CLAUDE_PLUGIN_ROOT paths.
   process.exit(0);
 }
+
+const timeoutMs = resolveHookTimeoutMs(resolved, process.argv.slice(3));
 
 const result = spawnSync(
   process.execPath,
@@ -107,8 +144,16 @@ const result = spawnSync(
     stdio: 'inherit',
     env: process.env,
     windowsHide: true,
+    ...(timeoutMs ? {
+      timeout: timeoutMs,
+      killSignal: process.platform === 'win32' ? 'SIGTERM' : 'SIGKILL',
+    } : {}),
   }
 );
+
+if (result.error?.code === 'ETIMEDOUT' && timeoutMs) {
+  process.stderr.write(`[run.cjs] Hook ${basename(resolved)} timed out after ${timeoutMs}ms; exiting fail-open.\n`);
+}
 
 // Propagate the child exit code (null → 0 to avoid blocking hooks).
 process.exit(result.status ?? 0);

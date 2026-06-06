@@ -7,13 +7,13 @@
 [![GitHub stars](https://img.shields.io/github/stars/Yeachan-Heo/oh-my-claudecode?style=flat&color=yellow)](https://github.com/Yeachan-Heo/oh-my-claudecode/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
-[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
+[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/sj4exxQ9v)
 
 **Claude Code için çoklu ajan orkestrasyonu. Sıfır öğrenme eğrisi.**
 
 _Claude Code'u öğrenmeyin. Sadece OMC kullanın._
 
-[Başlangıç](#hızlı-başlangıç) • [Dokümantasyon](https://yeachan-heo.github.io/oh-my-claudecode-website) • [Geçiş Rehberi](docs/MIGRATION.md)
+[Başlangıç](#hızlı-başlangıç) • [Dokümantasyon](https://yeachan-heo.github.io/oh-my-claudecode-website) • [Geçiş Rehberi](docs/MIGRATION.md) • [Discord](https://discord.gg/sj4exxQ9v)
 
 ---
 
@@ -111,7 +111,7 @@ Güncellemeden sonra sorun yaşarsanız, eski plugin önbelleğini temizleyin:
 
 ### Orkestrasyon Modları
 
-Farklı kullanım senaryoları için birden fazla strateji — Team destekli orkestrasyondan token-verimli yeniden düzenlemeye. [Daha fazla bilgi →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#execution-modes)
+Farklı kullanım senaryoları için birden fazla strateji — Team destekli orkestrasyondan token-verimli yeniden düzenlemeye. [Daha fazla bilgi →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#execution-modes)
 
 | Mod                           | Nedir                                                                                  | Kullanım Alanı                                                    |
 | ----------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
@@ -167,7 +167,7 @@ server.py:42'deki handler'ı try/except ClientDisconnectedError ile sarın...
 ```
 
 **Beceri yönetimi:** `/skill list | add | remove | edit | search`
-**Otomatik öğrenme:** `/learner` katı kalite standartlarıyla yeniden kullanılabilir kalıplar çıkarır
+**Otomatik öğrenme:** `/skillify` katı kalite standartlarıyla yeniden kullanılabilir kalıplar çıkarır
 **Otomatik enjeksiyon:** Eşleşen beceriler otomatik olarak bağlama yüklenir — manuel çağrı gerekmez
 
 [Tam özellik listesi →](docs/REFERENCE.md)

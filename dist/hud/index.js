@@ -5,27 +5,27 @@
  * Statusline command that visualizes oh-my-claudecode state.
  * Receives stdin JSON from Claude Code and outputs formatted statusline.
  */
-import { readStdin, writeStdinCache, readStdinCache, getContextPercent, getModelName, stabilizeContextPercent, } from "./stdin.js";
+import { readStdin, writeStdinCache, readStdinCache, getContextPercent, getModelId, getModelName, getRateLimitsFromStdin, stabilizeContextPercent, } from "./stdin.js";
 import { parseTranscript } from "./transcript.js";
 import { readHudState, readHudConfig, getRunningTasks, writeHudState, initializeHUDState, } from "./state.js";
 import { readRalphStateForHud, readUltraworkStateForHud, readPrdStateForHud, readAutopilotStateForHud, } from "./omc-state.js";
-import { getUsage } from "./usage-api.js";
+import { getUsage, getSubscriptionInfo } from "./usage-api.js";
 import { executeCustomProvider } from "./custom-rate-provider.js";
 import { render } from "./render.js";
 import { detectApiKeySource } from "./elements/api-key-source.js";
 import { refreshMissionBoardState } from "./mission-board.js";
 import { sanitizeOutput } from "./sanitize.js";
+import { estimatePayloadFromTranscriptPath } from "./payload-estimate.js";
 import { getRuntimePackageVersion } from "../lib/version.js";
 import { compareVersions } from "../features/auto-update.js";
 import { resolveToWorktreeRoot, resolveTranscriptPath, } from "../lib/worktree-paths.js";
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { access, readFile } from "fs/promises";
 import { join, basename, dirname } from "path";
-import { homedir } from "os";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { getOmcRoot } from "../lib/worktree-paths.js";
-import { getClaudeConfigDir } from "../utils/config-dir.js";
+import { getClaudeConfigDir, getUpdateCheckCachePath } from "../utils/config-dir.js";
 /**
  * Extract session ID (UUID) from a transcript path.
  */
@@ -34,6 +34,18 @@ function extractSessionIdFromPath(transcriptPath) {
         return null;
     const match = transcriptPath.match(/([0-9a-f-]{36})(?:\.jsonl)?$/i);
     return match ? match[1] : null;
+}
+function mergeStdinRateLimits(stdinRateLimits, usageResult) {
+    if (!stdinRateLimits) {
+        return usageResult;
+    }
+    return {
+        ...(usageResult ?? {}),
+        rateLimits: {
+            ...(usageResult?.rateLimits ?? {}),
+            ...stdinRateLimits,
+        },
+    };
 }
 /**
  * Read cached session summary from state directory.
@@ -200,11 +212,6 @@ async function main(watchMode = false, skipInit = false) {
             return;
         }
         const cwd = resolveToWorktreeRoot(stdin.cwd || undefined);
-        // Initialize HUD state (cleanup stale/orphaned tasks)
-        // Must happen after cwd resolution so cleanup targets the correct project directory
-        if (!skipInit) {
-            await initializeHUDState(cwd);
-        }
         // Read configuration (before transcript parsing so we can use staleTaskThresholdMinutes)
         // Clone to avoid mutating shared DEFAULT_HUD_CONFIG when applying runtime width detection
         const config = { ...readHudConfig() };
@@ -228,13 +235,18 @@ async function main(watchMode = false, skipInit = false) {
             staleTaskThresholdMinutes: config.staleTaskThresholdMinutes,
         });
         const currentSessionId = extractSessionIdFromPath(resolvedTranscriptPath ?? stdin.transcript_path ?? "");
+        // Initialize HUD state (cleanup stale/orphaned tasks)
+        // Must happen after cwd resolution so cleanup targets the correct project directory
+        if (!skipInit) {
+            await initializeHUDState(cwd, currentSessionId ?? undefined);
+        }
         // Read OMC state files
         const ralph = readRalphStateForHud(cwd, currentSessionId ?? undefined);
         const ultrawork = readUltraworkStateForHud(cwd, currentSessionId ?? undefined);
         const prd = readPrdStateForHud(cwd);
         const autopilot = readAutopilotStateForHud(cwd, currentSessionId ?? undefined);
         // Read HUD state for background tasks
-        const hudState = readHudState(cwd);
+        const hudState = readHudState(cwd, currentSessionId ?? undefined);
         const _backgroundTasks = hudState?.backgroundTasks || [];
         // Persist session start time to survive tail-parsing resets (#528)
         // When tail parsing kicks in for large transcripts, sessionStart comes from
@@ -260,10 +272,16 @@ async function main(watchMode = false, skipInit = false) {
             stateToWrite.sessionStartTimestamp = sessionStart.toISOString();
             stateToWrite.sessionId = currentSessionId ?? undefined;
             stateToWrite.timestamp = new Date().toISOString();
-            writeHudState(stateToWrite, cwd);
+            writeHudState(stateToWrite, cwd, currentSessionId ?? undefined);
         }
-        // Fetch rate limits from OAuth API (if available)
-        const rateLimitsResult = config.elements.rateLimits !== false ? await getUsage() : null;
+        // Merge Claude Code stdin generic buckets with API/cache-specific fields.
+        // Stdin owns fresher five-hour/seven-day values, while getUsage() may provide
+        // Sonnet/Opus weekly, monthly, extra, stale, and error metadata.
+        const stdinRateLimits = getRateLimitsFromStdin(stdin);
+        const usageResult = config.elements.rateLimits === false ? null : await getUsage();
+        const rateLimitsResult = config.elements.rateLimits === false
+            ? null
+            : mergeStdinRateLimits(stdinRateLimits, usageResult);
         // Fetch custom rate limit buckets (if configured)
         const customBuckets = config.rateLimitsProvider?.type === "custom"
             ? await executeCustomProvider(config.rateLimitsProvider)
@@ -284,7 +302,7 @@ async function main(watchMode = false, skipInit = false) {
         }
         // Async file read to avoid blocking event loop (Issue #1273)
         try {
-            const updateCacheFile = join(homedir(), ".omc", "update-check.json");
+            const updateCacheFile = getUpdateCheckCachePath();
             await access(updateCacheFile);
             const content = await readFile(updateCacheFile, "utf-8");
             const cached = JSON.parse(content);
@@ -320,11 +338,23 @@ async function main(watchMode = false, skipInit = false) {
             ? await refreshMissionBoardState(cwd, config.missionBoard)
             : null;
         const contextPercent = getContextPercent(stdin);
+        const payloadEstimate = estimatePayloadFromTranscriptPath(resolvedTranscriptPath);
+        // Read subscription info for enterprise detection (best-effort).
+        // Rate-limit rendering must not depend on this metadata being present.
+        const subscriptionInfo = (() => {
+            try {
+                return getSubscriptionInfo() ?? { subscriptionType: null, rateLimitTier: null };
+            }
+            catch {
+                return { subscriptionType: null, rateLimitTier: null };
+            }
+        })();
         // Build render context
         const context = {
             contextPercent,
             contextDisplayScope: currentSessionId ?? cwd,
             modelName: getModelName(stdin),
+            modelId: getModelId(stdin),
             ralph,
             ultrawork,
             prd,
@@ -353,18 +383,24 @@ async function main(watchMode = false, skipInit = false) {
             apiKeySource: config.elements.apiKeySource
                 ? detectApiKeySource(cwd)
                 : null,
+            subscriptionType: subscriptionInfo.subscriptionType,
+            rateLimitTier: subscriptionInfo.rateLimitTier,
             profileName: process.env.CLAUDE_CONFIG_DIR
                 ? basename(process.env.CLAUDE_CONFIG_DIR).replace(/^\./, "")
                 : null,
             sessionSummary,
             lastToolName: transcriptData.lastToolName,
+            payloadEstimate,
         };
         // Debug: log data if OMC_DEBUG is set
         if (process.env.OMC_DEBUG) {
             console.error("[HUD DEBUG] stdin.context_window:", JSON.stringify(stdin.context_window));
             console.error("[HUD DEBUG] sessionHealth:", JSON.stringify(context.sessionHealth));
         }
-        // autoCompact: write trigger file when context exceeds threshold
+        // autoCompact: write trigger file when token context exceeds threshold.
+        // Payload pressure is warning-only for now because statusline hooks can
+        // estimate from local transcript artifacts but do not receive Claude Code's
+        // exact serialized API request body.
         // A companion hook can read this file to inject a /compact suggestion.
         if (config.contextLimitWarning.autoCompact &&
             context.contextPercent >= config.contextLimitWarning.threshold) {

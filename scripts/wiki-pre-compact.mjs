@@ -7,7 +7,14 @@ async function main() {
     const data = JSON.parse(input);
     const { onPreCompact } = await import('../dist/hooks/wiki/session-hooks.js');
     const result = onPreCompact(data);
-    console.log(JSON.stringify(result));
+    if (result.additionalContext) {
+      console.log(JSON.stringify({
+        continue: true,
+        systemMessage: result.additionalContext,
+      }));
+    } else {
+      console.log(JSON.stringify({ continue: true, suppressOutput: true }));
+    }
   } catch (error) {
     console.error('[wiki-pre-compact] Error:', error.message);
     console.log(JSON.stringify({ continue: true, suppressOutput: true }));

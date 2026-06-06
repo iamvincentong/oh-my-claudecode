@@ -10,14 +10,17 @@
  * Ported from oh-my-opencode's ralph hook.
  */
 
+import { execSync } from "child_process";
 import { readFileSync } from "fs";
-import { join } from "path";
+import { basename, join } from "path";
 import {
   writeModeState,
   readModeState,
   clearModeStateFile,
 } from "../../lib/mode-state-io.js";
 import {
+  ensurePrdForStartup,
+  findPrdPath,
   readPrd,
   getPrdStatus,
   formatNextStoryPrompt,
@@ -26,6 +29,7 @@ import {
   type UserStory,
 } from "./prd.js";
 import {
+  findProgressPath,
   getProgressContext,
   appendProgress,
   initProgress,
@@ -291,18 +295,54 @@ export function createRalphLoopHook(directory: string): RalphLoopHook {
 
     const enableUltrawork = !options?.disableUltrawork;
     const now = new Date().toISOString();
+    const normalizedPrompt = stripCriticModeFlag(stripNoPrdFlag(prompt));
+
+    let branchName = "ralph/task";
+    try {
+      branchName = execSync("git rev-parse --abbrev-ref HEAD", {
+        cwd: directory,
+        encoding: "utf-8",
+        timeout: 5000,
+      }).trim();
+    } catch {
+      // Fallback outside git repos.
+    }
+
+    const startupPrd = ensurePrdForStartup(
+      directory,
+      basename(directory),
+      branchName,
+      normalizedPrompt,
+      undefined,
+      sessionId,
+    );
+
+    if (!startupPrd.ok) {
+      console.error(`[RALPH PRD REQUIRED] ${startupPrd.error}`);
+      return false;
+    }
+
+    if (!findProgressPath(directory)) {
+      initProgress(directory);
+    }
 
     const state: RalphLoopState = {
       active: true,
       iteration: 1,
       max_iterations: options?.maxIterations ?? DEFAULT_MAX_ITERATIONS,
       started_at: now,
-      prompt,
+      prompt: normalizedPrompt,
       session_id: sessionId,
       project_path: directory,
       linked_ultrawork: enableUltrawork,
       critic_mode: options?.criticMode ?? detectCriticModeFlag(prompt) ?? DEFAULT_RALPH_CRITIC_MODE,
+      prd_mode: true,
     };
+
+    const prdCompletion = getPrdCompletionStatus(directory, sessionId);
+    if (prdCompletion.nextStory) {
+      state.current_story_id = prdCompletion.nextStory.id;
+    }
 
     const ralphSuccess = writeRalphState(directory, state, sessionId);
 
@@ -312,7 +352,7 @@ export function createRalphLoopHook(directory: string): RalphLoopHook {
       const ultraworkState: UltraworkState = {
         active: true,
         reinforcement_count: 0,
-        original_prompt: prompt,
+        original_prompt: normalizedPrompt,
         started_at: now,
         last_checked_at: now,
         linked_to_ralph: true,
@@ -320,19 +360,6 @@ export function createRalphLoopHook(directory: string): RalphLoopHook {
         project_path: directory,
       };
       writeUltraworkStateFromModule(ultraworkState, directory, sessionId);
-    }
-
-    // Auto-enable PRD mode if prd.json exists
-    if (ralphSuccess && hasPrd(directory)) {
-      state.prd_mode = true;
-      const prdCompletion = getPrdCompletionStatus(directory);
-      if (prdCompletion.nextStory) {
-        state.current_story_id = prdCompletion.nextStory.id;
-      }
-      // Initialize progress.txt if it doesn't exist
-      initProgress(directory);
-      // Write updated state with PRD fields
-      writeRalphState(directory, state, sessionId);
     }
 
     return ralphSuccess;
@@ -371,21 +398,21 @@ export function createRalphLoopHook(directory: string): RalphLoopHook {
 /**
  * Check if PRD mode is available (prd.json exists)
  */
-export function hasPrd(directory: string): boolean {
-  const prd = readPrd(directory);
+export function hasPrd(directory: string, sessionId?: string): boolean {
+  const prd = readPrd(directory, sessionId);
   return prd !== null;
 }
 
 /**
  * Get PRD completion status for ralph
  */
-export function getPrdCompletionStatus(directory: string): {
+export function getPrdCompletionStatus(directory: string, sessionId?: string): {
   hasPrd: boolean;
   allComplete: boolean;
   status: PRDStatus | null;
   nextStory: UserStory | null;
 } {
-  const prd = readPrd(directory);
+  const prd = readPrd(directory, sessionId);
 
   if (!prd) {
     return {
@@ -410,7 +437,7 @@ export function getPrdCompletionStatus(directory: string): {
  * Get context injection for ralph continuation
  * Includes PRD current story and progress memory
  */
-export function getRalphContext(directory: string): string {
+export function getRalphContext(directory: string, sessionId?: string): string {
   const parts: string[] = [];
 
   // Add progress context (patterns, learnings)
@@ -420,9 +447,9 @@ export function getRalphContext(directory: string): string {
   }
 
   // Add current story from PRD
-  const prdStatus = getPrdCompletionStatus(directory);
+  const prdStatus = getPrdCompletionStatus(directory, sessionId);
   if (prdStatus.hasPrd && prdStatus.nextStory) {
-    parts.push(formatNextStoryPrompt(prdStatus.nextStory));
+    parts.push(formatNextStoryPrompt(prdStatus.nextStory, findPrdPath(directory, sessionId) ?? undefined));
   }
 
   // Add PRD status summary
@@ -438,21 +465,21 @@ export function getRalphContext(directory: string): string {
 /**
  * Update ralph state with current story
  */
-export function setCurrentStory(directory: string, storyId: string): boolean {
-  const state = readRalphState(directory);
+export function setCurrentStory(directory: string, storyId: string, sessionId?: string): boolean {
+  const state = readRalphState(directory, sessionId);
   if (!state) {
     return false;
   }
 
   state.current_story_id = storyId;
-  return writeRalphState(directory, state);
+  return writeRalphState(directory, state, sessionId);
 }
 
 /**
  * Enable PRD mode in ralph state
  */
-export function enablePrdMode(directory: string): boolean {
-  const state = readRalphState(directory);
+export function enablePrdMode(directory: string, sessionId?: string): boolean {
+  const state = readRalphState(directory, sessionId);
   if (!state) {
     return false;
   }
@@ -462,7 +489,7 @@ export function enablePrdMode(directory: string): boolean {
   // Initialize progress.txt if it doesn't exist
   initProgress(directory);
 
-  return writeRalphState(directory, state);
+  return writeRalphState(directory, state, sessionId);
 }
 
 /**
@@ -530,8 +557,8 @@ export function getTeamPhaseDirective(
 /**
  * Check if ralph should complete based on PRD status
  */
-export function shouldCompleteByPrd(directory: string): boolean {
-  const status = getPrdCompletionStatus(directory);
+export function shouldCompleteByPrd(directory: string, sessionId?: string): boolean {
+  const status = getPrdCompletionStatus(directory, sessionId);
   return status.hasPrd && status.allComplete;
 }
 

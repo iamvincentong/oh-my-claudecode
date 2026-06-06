@@ -8,9 +8,12 @@
  */
 import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
+import { CANONICAL_TEAM_ROLES, KNOWN_AGENT_NAMES, } from "../shared/types.js";
 import { getConfigDir } from "../utils/paths.js";
 import { parseJsonc } from "../utils/jsonc.js";
-import { getDefaultTierModels, BUILTIN_EXTERNAL_MODEL_DEFAULTS, isNonClaudeProvider, } from "./models.js";
+import { getDefaultTierModels, BUILTIN_EXTERNAL_MODEL_DEFAULTS, shouldAutoForceInherit, } from "./models.js";
+import { normalizeDelegationRole } from "../features/delegation-routing/types.js";
+import { isDeprecatedMcpProvider } from "../features/delegation-routing/index.js";
 /**
  * Default configuration.
  *
@@ -57,6 +60,9 @@ export function buildDefaultConfig() {
         mcpServers: {
             exa: { enabled: true },
             context7: { enabled: true },
+        },
+        companyContext: {
+            onError: "warn",
         },
         permissions: {
             allowBash: true,
@@ -137,6 +143,12 @@ export function buildDefaultConfig() {
             enabled: false,
             defaultProvider: "claude",
             roles: {},
+        },
+        // /team role routing (Option E — /team-scoped per-role provider & model)
+        // Empty defaults: zero behavior change until user opts in.
+        team: {
+            ops: {},
+            roleRouting: {},
         },
         planOutput: {
             directory: ".omc/plans",
@@ -325,6 +337,14 @@ export function loadEnvConfig() {
         // Legacy fallback
         externalModelsDefaults.geminiModel = process.env.OMC_GEMINI_DEFAULT_MODEL;
     }
+    if (process.env.OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL) {
+        externalModelsDefaults.grokModel =
+            process.env.OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL;
+    }
+    else if (process.env.OMC_GROK_DEFAULT_MODEL) {
+        // Legacy fallback
+        externalModelsDefaults.grokModel = process.env.OMC_GROK_DEFAULT_MODEL;
+    }
     const externalModelsFallback = {
         onModelFailure: "provider_chain",
     };
@@ -360,11 +380,136 @@ export function loadEnvConfig() {
             };
         }
     }
+    // /team role routing env override (OMC_TEAM_ROLE_OVERRIDES — single JSON var).
+    // Best-effort: invalid JSON logs and is ignored (no throw on env path).
+    const teamRoleOverrides = parseTeamRoleOverridesFromEnv();
+    if (teamRoleOverrides) {
+        config.team = {
+            ...config.team,
+            roleRouting: {
+                ...config.team?.roleRouting,
+                ...teamRoleOverrides,
+            },
+        };
+    }
     return config;
 }
 /**
  * Load and merge all configuration sources
  */
+function warnOnDeprecatedDelegationRouting(config) {
+    const deprecatedProviders = new Set();
+    const defaultProvider = config.delegationRouting?.defaultProvider;
+    if (isDeprecatedMcpProvider(defaultProvider)) {
+        deprecatedProviders.add(defaultProvider);
+    }
+    const roles = config.delegationRouting?.roles ?? {};
+    for (const route of Object.values(roles)) {
+        const provider = route?.provider;
+        if (isDeprecatedMcpProvider(provider)) {
+            deprecatedProviders.add(provider);
+        }
+    }
+    if (deprecatedProviders.size === 0) {
+        return;
+    }
+    console.warn("[OMC] delegationRouting to Codex/Gemini is deprecated and falls back to Claude Task. Use /team for Codex/Gemini CLI workers instead.");
+}
+/**
+ * Validate `team.roleRouting` parsed from the merged config.
+ *
+ * Walks the raw parsed object (not TS types) so deepMerge escapes are caught.
+ * Throws a descriptive error naming offending key + allowed values.
+ */
+const CANONICAL_TEAM_ROLE_SET = new Set(CANONICAL_TEAM_ROLES);
+const KNOWN_AGENT_NAME_SET = new Set(KNOWN_AGENT_NAMES);
+// /team CLI workers — codex/gemini/grok here are CLI integrations, NOT the deprecated MCP delegationRouting providers.
+const TEAM_ROLE_PROVIDERS = new Set(["claude", "codex", "gemini", "grok"]);
+const TEAM_ROLE_TIERS = new Set(["HIGH", "MEDIUM", "LOW"]);
+export function validateTeamConfig(config) {
+    const team = config.team;
+    if (!team || typeof team !== "object")
+        return;
+    const ops = team.ops;
+    if (ops && typeof ops === "object") {
+        if (ops.defaultAgentType !== undefined) {
+            if (typeof ops.defaultAgentType !== "string" ||
+                !TEAM_ROLE_PROVIDERS.has(ops.defaultAgentType)) {
+                throw new Error(`[OMC] team.ops.defaultAgentType: invalid value "${String(ops.defaultAgentType)}". Allowed: ${[...TEAM_ROLE_PROVIDERS].join(", ")}`);
+            }
+        }
+        if (ops.worktreeMode !== undefined) {
+            const allowed = new Set(["disabled", "off", "detached", "branch", "named"]);
+            if (typeof ops.worktreeMode !== "string" || !allowed.has(ops.worktreeMode)) {
+                throw new Error(`[OMC] team.ops.worktreeMode: invalid value "${String(ops.worktreeMode)}". Allowed: ${[...allowed].join(", ")}`);
+            }
+        }
+    }
+    const roleRouting = team.roleRouting;
+    if (!roleRouting || typeof roleRouting !== "object")
+        return;
+    for (const [rawRoleKey, rawSpec] of Object.entries(roleRouting)) {
+        const normalized = normalizeDelegationRole(rawRoleKey);
+        if (!CANONICAL_TEAM_ROLE_SET.has(normalized)) {
+            throw new Error(`[OMC] team.roleRouting: unknown role "${rawRoleKey}". Allowed roles: ${[...CANONICAL_TEAM_ROLE_SET].join(", ")}`);
+        }
+        if (!rawSpec || typeof rawSpec !== "object" || Array.isArray(rawSpec)) {
+            throw new Error(`[OMC] team.roleRouting.${rawRoleKey}: must be an object, got ${Array.isArray(rawSpec) ? "array" : typeof rawSpec}`);
+        }
+        const spec = rawSpec;
+        // Orchestrator entry: only `model` is allowed.
+        if (normalized === "orchestrator") {
+            for (const key of Object.keys(spec)) {
+                if (key !== "model") {
+                    throw new Error(`[OMC] team.roleRouting.orchestrator: key "${key}" is not allowed (orchestrator is pinned to claude; only "model" is configurable)`);
+                }
+            }
+            if (spec.model !== undefined && !isValidModelValue(spec.model)) {
+                throw new Error(`[OMC] team.roleRouting.orchestrator.model: must be a tier name (HIGH|MEDIUM|LOW) or model ID string, got ${typeof spec.model}`);
+            }
+            continue;
+        }
+        if (spec.provider !== undefined) {
+            if (typeof spec.provider !== "string" || !TEAM_ROLE_PROVIDERS.has(spec.provider)) {
+                throw new Error(`[OMC] team.roleRouting.${rawRoleKey}.provider: invalid value "${String(spec.provider)}". Allowed: ${[...TEAM_ROLE_PROVIDERS].join(", ")}`);
+            }
+        }
+        if (spec.model !== undefined && !isValidModelValue(spec.model)) {
+            throw new Error(`[OMC] team.roleRouting.${rawRoleKey}.model: must be a tier name (HIGH|MEDIUM|LOW) or a non-empty model ID string`);
+        }
+        if (spec.agent !== undefined) {
+            if (typeof spec.agent !== "string" || !KNOWN_AGENT_NAME_SET.has(spec.agent)) {
+                throw new Error(`[OMC] team.roleRouting.${rawRoleKey}.agent: unknown agent "${String(spec.agent)}". Allowed: ${[...KNOWN_AGENT_NAME_SET].join(", ")}`);
+            }
+        }
+    }
+}
+function isValidModelValue(value) {
+    if (typeof value !== "string")
+        return false;
+    if (value.length === 0)
+        return false;
+    // Accept tier names OR explicit model IDs (any non-empty string).
+    // Tier names are canonicalized during resolution; explicit IDs pass through.
+    return TEAM_ROLE_TIERS.has(value) || value.length > 0;
+}
+function parseTeamRoleOverridesFromEnv() {
+    const raw = process.env.OMC_TEAM_ROLE_OVERRIDES;
+    if (!raw)
+        return undefined;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            console.warn("[OMC] OMC_TEAM_ROLE_OVERRIDES: expected a JSON object; ignoring.");
+            return undefined;
+        }
+        return parsed;
+    }
+    catch (err) {
+        console.warn(`[OMC] OMC_TEAM_ROLE_OVERRIDES: invalid JSON, ignoring (${err.message})`);
+        return undefined;
+    }
+}
 export function loadConfig() {
     const paths = getConfigPaths();
     // Start with fresh defaults so env-based model overrides are resolved at call time
@@ -390,12 +535,16 @@ export function loadConfig() {
     // tier names (sonnet/opus/haiku) causes 400 errors on these platforms.
     if (config.routing?.forceInherit !== true &&
         process.env.OMC_ROUTING_FORCE_INHERIT === undefined &&
-        isNonClaudeProvider()) {
+        shouldAutoForceInherit()) {
         config.routing = {
             ...config.routing,
             forceInherit: true,
         };
     }
+    warnOnDeprecatedDelegationRouting(config);
+    // Validate /team role routing post-merge. Throws on invalid shape,
+    // walking the parsed object so deepMerge bypasses surface here.
+    validateTeamConfig(config);
     return config;
 }
 const OMC_STARTUP_COMPACTABLE_SECTIONS = [
@@ -403,6 +552,18 @@ const OMC_STARTUP_COMPACTABLE_SECTIONS = [
     "skills",
     "team_compositions",
 ];
+const OMC_STARTUP_GUIDANCE_MAX_CHARS = 8000;
+const OMC_CONTEXT_FILES_MAX_CHARS = 12000;
+function compactBudgetedText(text, maxChars) {
+    if (!text || maxChars <= 0)
+        return "";
+    const notice = "\n...[truncated to preserve startup context budget]";
+    if (text.length <= maxChars)
+        return text;
+    if (maxChars <= notice.length)
+        return notice.slice(0, maxChars);
+    return `${text.slice(0, maxChars - notice.length).trimEnd()}${notice}`;
+}
 function looksLikeOmcGuidance(content) {
     return (content.includes("<guidance_schema_contract>") &&
         /oh-my-(claudecode|codex)/i.test(content) &&
@@ -415,18 +576,20 @@ export function compactOmcStartupGuidance(content) {
     let compacted = content;
     let removedAny = false;
     for (const section of OMC_STARTUP_COMPACTABLE_SECTIONS) {
-        const pattern = new RegExp(`\n*<${section}>[\\s\\S]*?<\/${section}>\n*`, "g");
+        const pattern = new RegExp(`\n*<${section}>[\\s\\S]*?</${section}>\n*`, "g");
         const next = compacted.replace(pattern, "\n\n");
         removedAny = removedAny || next !== compacted;
         compacted = next;
     }
-    if (!removedAny) {
-        return content;
-    }
-    return compacted
+    const normalized = compacted
         .replace(/\n{3,}/g, "\n\n")
         .replace(/\n\n---\n\n---\n\n/g, "\n\n---\n\n")
         .trim();
+    if (normalized.length <= OMC_STARTUP_GUIDANCE_MAX_CHARS) {
+        return removedAny ? normalized : content;
+    }
+    const notice = "\n\n[OMC startup guidance truncated to preserve an 8000-character budget. Read the source file directly for the full document.]";
+    return `${normalized.slice(0, OMC_STARTUP_GUIDANCE_MAX_CHARS - notice.length).trimEnd()}${notice}`;
 }
 /**
  * Find and load AGENTS.md or CLAUDE.md files for context injection
@@ -464,16 +627,28 @@ export function findContextFiles(startDir) {
  */
 export function loadContextFromFiles(files) {
     const contexts = [];
+    let used = 0;
+    const separator = "\n\n---\n\n";
     for (const file of files) {
         try {
             const content = compactOmcStartupGuidance(readFileSync(file, "utf-8"));
-            contexts.push(`## Context from ${file}\n\n${content}`);
+            const contextBlock = `## Context from ${file}\n\n${content}`;
+            const separatorLength = contexts.length > 0 ? separator.length : 0;
+            const remainingBudget = OMC_CONTEXT_FILES_MAX_CHARS - used - separatorLength;
+            if (remainingBudget <= 0)
+                break;
+            if (contextBlock.length > remainingBudget) {
+                contexts.push(compactBudgetedText(contextBlock, remainingBudget));
+                break;
+            }
+            contexts.push(contextBlock);
+            used += separatorLength + contextBlock.length;
         }
         catch (error) {
             console.warn(`Warning: Could not read context file ${file}:`, error);
         }
     }
-    return contexts.join("\n\n---\n\n");
+    return contexts.join(separator);
 }
 /**
  * Generate JSON Schema for configuration (for editor autocomplete)
@@ -603,6 +778,22 @@ export function generateConfigSchema() {
                     },
                 },
             },
+            companyContext: {
+                type: "object",
+                description: "Prompt-level company-context MCP contract for workflow skills",
+                properties: {
+                    tool: {
+                        type: "string",
+                        description: "Full MCP tool name to call, for example mcp__vendor__get_company_context",
+                    },
+                    onError: {
+                        type: "string",
+                        enum: ["warn", "silent", "fail"],
+                        default: "warn",
+                        description: "How prompt workflows should react when the configured company-context tool call fails",
+                    },
+                },
+            },
             permissions: {
                 type: "object",
                 description: "Permission settings",
@@ -663,7 +854,7 @@ export function generateConfigSchema() {
             },
             externalModels: {
                 type: "object",
-                description: "External model provider configuration (Codex, Gemini)",
+                description: "External model provider configuration (Codex, Gemini, Grok)",
                 properties: {
                     defaults: {
                         type: "object",
@@ -683,6 +874,10 @@ export function generateConfigSchema() {
                                 type: "string",
                                 default: BUILTIN_EXTERNAL_MODEL_DEFAULTS.geminiModel,
                                 description: "Default Gemini model",
+                            },
+                            grokModel: {
+                                type: "string",
+                                description: "Default Grok Build model",
                             },
                         },
                     },
@@ -766,6 +961,38 @@ export function generateConfigSchema() {
                                 fallback: { type: "array", items: { type: "string" } },
                             },
                             required: ["provider", "tool"],
+                        },
+                    },
+                },
+            },
+            team: {
+                type: "object",
+                description: "/team runtime configuration",
+                properties: {
+                    ops: {
+                        type: "object",
+                        properties: {
+                            maxAgents: { type: "integer", minimum: 1 },
+                            defaultAgentType: {
+                                type: "string",
+                                enum: ["claude", "codex", "gemini", "grok"],
+                                default: "claude",
+                            },
+                            monitorIntervalMs: { type: "integer", minimum: 1 },
+                            shutdownTimeoutMs: { type: "integer", minimum: 1 },
+                            costMode: { type: "string", enum: ["normal", "downgrade"] },
+                        },
+                    },
+                    roleRouting: {
+                        type: "object",
+                        description: "Provider/model overrides for canonical /team roles",
+                        additionalProperties: {
+                            type: "object",
+                            properties: {
+                                provider: { type: "string", enum: ["claude", "codex", "gemini", "grok"] },
+                                model: { type: "string" },
+                                agent: { type: "string" },
+                            },
                         },
                     },
                 },

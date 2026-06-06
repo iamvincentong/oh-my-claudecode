@@ -3,15 +3,25 @@
  *
  * Renders git repository name and branch information.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { dim, cyan, green, red } from '../colors.js';
+import { DEFAULT_HUD_LABELS } from '../types.js';
 const CACHE_TTL_MS = 30_000;
 const repoCache = new Map();
 const branchCache = new Map();
 const worktreeCache = new Map();
 const statusCache = new Map();
+function git(args, cwd) {
+    return execFileSync('git', args, {
+        cwd,
+        encoding: 'utf-8',
+        timeout: 1000,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+    }).trim();
+}
 /**
  * Clear all git caches. Call in tests beforeEach to ensure a clean slate.
  */
@@ -38,13 +48,7 @@ export function getGitRepoName(cwd) {
     }
     let result = null;
     try {
-        const url = execSync('git remote get-url origin', {
-            cwd,
-            encoding: 'utf-8',
-            timeout: 1000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32' ? 'cmd.exe' : undefined,
-        }).trim();
+        const url = git(['remote', 'get-url', 'origin'], cwd);
         if (!url) {
             result = null;
         }
@@ -75,13 +79,7 @@ export function getGitBranch(cwd) {
     }
     let result = null;
     try {
-        const branch = execSync('git branch --show-current', {
-            cwd,
-            encoding: 'utf-8',
-            timeout: 1000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32' ? 'cmd.exe' : undefined,
-        }).trim();
+        const branch = git(['branch', '--show-current'], cwd);
         result = branch || null;
     }
     catch {
@@ -104,17 +102,10 @@ export function getWorktreeInfo(cwd) {
     if (cached && Date.now() < cached.expiresAt) {
         return cached.value;
     }
-    const execOpts = {
-        cwd,
-        encoding: 'utf-8',
-        timeout: 1000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        shell: process.platform === 'win32' ? 'cmd.exe' : undefined,
-    };
     let result = { isWorktree: false, worktreeName: null };
     try {
-        const gitDir = execSync('git rev-parse --git-dir', execOpts).trim();
-        const gitCommonDir = execSync('git rev-parse --git-common-dir', execOpts).trim();
+        const gitDir = git(['rev-parse', '--git-dir'], cwd);
+        const gitCommonDir = git(['rev-parse', '--git-common-dir'], cwd);
         // Canonicalize via realpathSync to handle symlinked repo paths
         let resolvedGitDir = resolve(key, gitDir);
         let resolvedCommonDir = resolve(key, gitCommonDir);
@@ -169,7 +160,7 @@ export function renderGitBranch(cwd) {
 }
 /**
  * Get git working tree status counts.
- * Parses `git status --porcelain -b` for staged, modified, untracked,
+ * Parses `git --no-optional-locks status --porcelain -b` for staged, modified, untracked,
  * ahead, and behind counts.
  *
  * @param cwd - Working directory
@@ -183,13 +174,7 @@ export function getGitStatusCounts(cwd) {
     }
     let result = null;
     try {
-        const output = execSync('git status --porcelain -b', {
-            cwd,
-            encoding: 'utf-8',
-            timeout: 1000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32' ? 'cmd.exe' : undefined,
-        }).trim();
+        const output = git(['--no-optional-locks', 'status', '--porcelain', '-b'], cwd);
         let staged = 0, modified = 0, untracked = 0, ahead = 0, behind = 0;
         if (output) {
             const lines = output.split('\n');
@@ -233,7 +218,7 @@ export function getGitStatusCounts(cwd) {
  * @param cwd - Working directory
  * @returns Formatted status or null if clean or not in a git repo
  */
-export function renderGitStatus(cwd) {
+export function renderGitStatus(cwd, labels = DEFAULT_HUD_LABELS) {
     const counts = getGitStatusCounts(cwd);
     if (!counts)
         return null;
@@ -243,15 +228,15 @@ export function renderGitStatus(cwd) {
     }
     const parts = [];
     if (staged > 0)
-        parts.push(`${green('+')}${staged}`);
+        parts.push(`${green(labels.staged)}${staged}`);
     if (modified > 0)
-        parts.push(`${red('!')}${modified}`);
+        parts.push(`${red(labels.modified)}${modified}`);
     if (untracked > 0)
-        parts.push(`${cyan('?')}${untracked}`);
+        parts.push(`${cyan(labels.untracked)}${untracked}`);
     if (ahead > 0)
-        parts.push(`${green('⇡')}${ahead}`);
+        parts.push(`${green(labels.ahead)}${ahead}`);
     if (behind > 0)
-        parts.push(`${red('⇣')}${behind}`);
+        parts.push(`${red(labels.behind)}${behind}`);
     return parts.join(' ');
 }
 //# sourceMappingURL=git.js.map

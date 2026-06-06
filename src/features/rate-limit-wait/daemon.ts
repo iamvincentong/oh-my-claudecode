@@ -14,7 +14,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, chmodSync, statSync, appendFileSync, renameSync } from 'fs';
 import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { spawn } from 'child_process';
 import { resolveDaemonModulePath } from '../../utils/daemon-module-path.js';
 import { getGlobalOmcStatePath } from '../../utils/paths.js';
@@ -34,6 +34,7 @@ import type {
   DaemonState,
   DaemonConfig,
   DaemonResponse,
+  RateLimitStatus,
 } from './types.js';
 import { isProcessAlive } from '../../platform/index.js';
 
@@ -297,6 +298,20 @@ function createInitialState(): DaemonState {
 }
 
 /**
+ * Only a confirmed transition out of quota exhaustion should trigger pane resume.
+ * Degraded/stale usage-api 429 responses are visible to users but must not act
+ * like a real all-clear signal for blocked panes.
+ */
+export function shouldResumeBlockedPanesOnStatusChange(
+  previousStatus: RateLimitStatus | null,
+  nextStatus: RateLimitStatus | null,
+): boolean {
+  const wasLimited = shouldMonitorBlockedPanes(previousStatus);
+  const isNowLimited = shouldMonitorBlockedPanes(nextStatus);
+  return wasLimited && !isNowLimited && !isRateLimitStatusDegraded(nextStatus);
+}
+
+/**
  * Register cleanup handlers for the daemon process.
  * Ensures PID file and state are cleaned up on exit signals.
  */
@@ -348,8 +363,11 @@ async function pollLoop(config: Required<DaemonConfig>): Promise<void> {
           setTimeout(() => reject(new Error('checkRateLimitStatus timed out after 30s')), 30_000)
         ),
       ]);
-      const wasLimited = shouldMonitorBlockedPanes(state.rateLimitStatus);
       const isNowLimited = shouldMonitorBlockedPanes(rateLimitStatus);
+      const shouldResumeBlockedPanes = shouldResumeBlockedPanesOnStatusChange(
+        state.rateLimitStatus,
+        rateLimitStatus,
+      );
 
       state.rateLimitStatus = rateLimitStatus;
 
@@ -361,12 +379,9 @@ async function pollLoop(config: Required<DaemonConfig>): Promise<void> {
 
       // If currently rate limited, scan for blocked panes
       if (isNowLimited && isTmuxAvailable()) {
-        const scanReason = rateLimitStatus?.isLimited
-          ? 'Rate limited - scanning for blocked panes'
-          : 'Usage API degraded (429/stale cache) - scanning for blocked panes';
-        log(scanReason, config);
+        log('Rate limited - scanning for blocked panes', config);
 
-        const blockedPanes = scanForBlockedPanes(config.paneLinesToCapture);
+        const blockedPanes = scanForBlockedPanes(config.paneLinesToCapture, dirname(config.stateFilePath));
 
         // Add newly detected blocked panes
         for (const pane of blockedPanes) {
@@ -384,7 +399,7 @@ async function pollLoop(config: Required<DaemonConfig>): Promise<void> {
       }
 
       // If rate limit just cleared (was limited, now not), attempt resume
-      if (wasLimited && !isNowLimited && state.blockedPanes.length > 0) {
+      if (shouldResumeBlockedPanes && state.blockedPanes.length > 0) {
         log('Rate limit cleared! Attempting to resume blocked panes', config);
 
         for (const pane of state.blockedPanes) {
@@ -458,6 +473,7 @@ export function startDaemon(config?: DaemonConfig): DaemonResponse {
   // Fork a new process for the daemon using dynamic import() for ESM compatibility.
   // The project uses "type": "module", so require() would fail with ERR_REQUIRE_ESM.
   const modulePath = resolveDaemonModulePath(__filename, ['features', 'rate-limit-wait', 'daemon.js']);
+  const moduleUrl = pathToFileURL(modulePath).href;
   // Write config to a temp file to avoid config injection via template string.
   // This prevents malicious config values from being interpreted as code.
   const configId = Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -469,7 +485,7 @@ export function startDaemon(config?: DaemonConfig): DaemonResponse {
   }
 
   const daemonScript = `
-    import('${modulePath}').then(async ({ pollLoopWithConfigFile }) => {
+    import(${JSON.stringify(moduleUrl)}).then(async ({ pollLoopWithConfigFile }) => {
       await pollLoopWithConfigFile(process.env.OMC_DAEMON_CONFIG_FILE);
     }).catch((err) => { console.error(err); process.exit(1); });
   `;
@@ -646,7 +662,7 @@ export async function detectBlockedPanes(config?: DaemonConfig): Promise<DaemonR
   }
 
   const rateLimitStatus = await checkRateLimitStatus();
-  const blockedPanes = scanForBlockedPanes(cfg.paneLinesToCapture);
+  const blockedPanes = scanForBlockedPanes(cfg.paneLinesToCapture, dirname(cfg.stateFilePath));
 
   return {
     success: true,

@@ -1,14 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 const SCRIPT_PATH = join(process.cwd(), 'scripts', 'keyword-detector.mjs');
 const NODE = process.execPath;
-function runKeywordDetector(prompt) {
+function runKeywordDetector(prompt, cwd = process.cwd(), sessionId = 'session-2053') {
     const raw = execFileSync(NODE, [SCRIPT_PATH], {
         input: JSON.stringify({
             hook_event_name: 'UserPromptSubmit',
-            cwd: process.cwd(),
-            session_id: 'session-2053',
+            cwd,
+            session_id: sessionId,
             prompt,
         }),
         encoding: 'utf-8',
@@ -20,6 +22,9 @@ function runKeywordDetector(prompt) {
         timeout: 15000,
     }).trim();
     return JSON.parse(raw);
+}
+function getRalplanStatePath(cwd, sessionId) {
+    return join(cwd, '.omc', 'state', 'sessions', sessionId, 'ralplan-state.json');
 }
 describe('keyword-detector.mjs mode-message dispatch', () => {
     it('injects search mode for deepsearch without emitting a magic skill invocation', () => {
@@ -48,7 +53,195 @@ describe('keyword-detector.mjs mode-message dispatch', () => {
         const output = runKeywordDetector('ralplan fix issue #2053');
         const context = output.hookSpecificOutput?.additionalContext ?? '';
         expect(context).toContain('[MAGIC KEYWORD: RALPLAN]');
-        expect(context).toContain('name: ralplan');
+        expect(context).toContain('Preferred invocation: /oh-my-claudecode:ralplan');
+        expect(context).not.toContain('name: ralplan');
+    });
+    it('does not emit or activate ralplan for informational/question mentions', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ralplan-info-'));
+        const sessionId = 'session-2619-info';
+        const output = runKeywordDetector('Verify the actual UserPromptSubmit/stop-hook path that activates ralplan state, reproduce the false activation on non-task keyword mention.', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const ralplanStatePath = getRalplanStatePath(cwd, sessionId);
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: RALPLAN]');
+        expect(existsSync(ralplanStatePath)).toBe(false);
+    });
+    it('still activates ralplan state for a true ralplan task invocation', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ralplan-task-'));
+        const sessionId = 'session-2619-task';
+        const output = runKeywordDetector('please use ralplan to plan issue #2053', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const ralplanStatePath = getRalplanStatePath(cwd, sessionId);
+        expect(output.continue).toBe(true);
+        expect(context).toContain('[MAGIC KEYWORD: RALPLAN]');
+        expect(existsSync(ralplanStatePath)).toBe(true);
+        const state = JSON.parse(readFileSync(ralplanStatePath, 'utf-8'));
+        expect(state.active).toBe(true);
+        expect(state.awaiting_confirmation).toBe(true);
+    });
+    it('launches the approved Team follow-up instead of re-entering ralplan when OMX planning artifacts already exist', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ralplan-followup-'));
+        const sessionId = 'session-2714-followup';
+        const sessionStateDir = join(cwd, '.omc', 'state', 'sessions', sessionId);
+        const omxPlansDir = join(cwd, '.omx', 'plans');
+        mkdirSync(sessionStateDir, { recursive: true });
+        mkdirSync(omxPlansDir, { recursive: true });
+        writeFileSync(join(sessionStateDir, 'ralplan-state.json'), JSON.stringify({
+            active: false,
+            session_id: sessionId,
+            current_phase: 'complete',
+            completed_at: new Date().toISOString(),
+        }, null, 2));
+        writeFileSync(join(omxPlansDir, 'prd-capture-page-ui-draft.md'), [
+            '# PRD',
+            '',
+            '## Acceptance criteria',
+            '- done',
+            '',
+            '## Requirement coverage map',
+            '- req -> impl',
+            '',
+            'omx team ".omx/plans/ralplan-capture-page-ui-draft-v7.md"',
+            '',
+        ].join('\n'));
+        writeFileSync(join(omxPlansDir, 'test-spec-capture-page-ui-draft.md'), [
+            '# Test Spec',
+            '',
+            '## Unit coverage',
+            '- unit',
+            '',
+            '## Verification mapping',
+            '- verify',
+            '',
+        ].join('\n'));
+        const output = runKeywordDetector('team', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).toContain('TEAM');
+        expect(context).not.toContain('[MAGIC KEYWORD: RALPLAN]');
+    });
+    it('does not launch execution follow-up while ralplan is still active after compact continuation', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ralplan-compact-readonly-'));
+        const sessionId = 'session-3122-compact-active';
+        const sessionStateDir = join(cwd, '.omc', 'state', 'sessions', sessionId);
+        const omxPlansDir = join(cwd, '.omx', 'plans');
+        mkdirSync(sessionStateDir, { recursive: true });
+        mkdirSync(omxPlansDir, { recursive: true });
+        writeFileSync(join(sessionStateDir, 'ralplan-state.json'), JSON.stringify({
+            active: true,
+            session_id: sessionId,
+            current_phase: 'ralplan',
+            started_at: new Date().toISOString(),
+        }, null, 2));
+        writeFileSync(join(omxPlansDir, 'prd-compact-readonly.md'), [
+            '# PRD',
+            '',
+            '## Acceptance criteria',
+            '- done',
+            '',
+            '## Requirement coverage map',
+            '- req -> impl',
+            '',
+            'omx team ".omx/plans/ralplan-compact-readonly.md"',
+            '',
+        ].join('\n'));
+        writeFileSync(join(omxPlansDir, 'test-spec-compact-readonly.md'), [
+            '# Test Spec',
+            '',
+            '## Unit coverage',
+            '- unit',
+            '',
+            '## Verification mapping',
+            '- verify',
+            '',
+        ].join('\n'));
+        for (const prompt of ['team', 'ralph']) {
+            const output = runKeywordDetector(prompt, cwd, sessionId);
+            const context = output.hookSpecificOutput?.additionalContext ?? '';
+            expect(output.continue).toBe(true);
+            expect(context).not.toContain('TEAM');
+            expect(context).not.toContain('RALPH');
+            expect(context).not.toContain('[MAGIC KEYWORD: RALPLAN]');
+        }
+    });
+    it('does not launch execution follow-up from a pending approval plan without a launch hint', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ralplan-no-hint-'));
+        const sessionId = 'session-3122-no-hint';
+        const sessionStateDir = join(cwd, '.omc', 'state', 'sessions', sessionId);
+        const omxPlansDir = join(cwd, '.omx', 'plans');
+        mkdirSync(sessionStateDir, { recursive: true });
+        mkdirSync(omxPlansDir, { recursive: true });
+        writeFileSync(join(sessionStateDir, 'ralplan-state.json'), JSON.stringify({
+            active: false,
+            session_id: sessionId,
+            current_phase: 'pending_approval',
+            completed_at: new Date().toISOString(),
+        }, null, 2));
+        writeFileSync(join(omxPlansDir, 'prd-compact-readonly.md'), [
+            '# PRD',
+            '',
+            '## Acceptance criteria',
+            '- done',
+            '',
+            '## Requirement coverage map',
+            '- req -> impl',
+            '',
+        ].join('\n'));
+        writeFileSync(join(omxPlansDir, 'test-spec-compact-readonly.md'), [
+            '# Test Spec',
+            '',
+            '## Unit coverage',
+            '- unit',
+            '',
+            '## Verification mapping',
+            '- verify',
+            '',
+        ].join('\n'));
+        for (const prompt of ['team', 'ralph']) {
+            const output = runKeywordDetector(prompt, cwd, sessionId);
+            const context = output.hookSpecificOutput?.additionalContext ?? '';
+            expect(output.continue).toBe(true);
+            expect(context).not.toContain('TEAM');
+            expect(context).not.toContain('RALPH');
+            expect(context).not.toContain('[MAGIC KEYWORD: RALPLAN]');
+        }
+    });
+    it('does not activate ralplan from a delegated /ask codex payload', () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'keyword-detector-ask-codex-'));
+        try {
+            const sessionId = 'ask-codex-session';
+            const output = runKeywordDetector('/ask codex 지금까지 논의한걸 ralplan으로 계획서 작성해줘', tempDir, sessionId);
+            expect(output.continue).toBe(true);
+            expect(output.suppressOutput).toBe(true);
+            expect(output.hookSpecificOutput).toBeUndefined();
+            expect(existsSync(join(tempDir, '.omc', 'state', 'sessions', sessionId, 'ralplan-state.json'))).toBe(false);
+        }
+        finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
+    });
+    it('initializes ralplan startup state and init context for explicit /ralplan slash invoke', () => {
+        const tempDir = mkdtempSync(join(tmpdir(), 'keyword-detector-ralplan-slash-'));
+        try {
+            const sessionId = 'slash-ralplan-session';
+            const output = runKeywordDetector('/oh-my-claudecode:ralplan issue #2622', tempDir, sessionId);
+            const context = output.hookSpecificOutput?.additionalContext ?? '';
+            expect(output.continue).toBe(true);
+            expect(output.hookSpecificOutput?.hookEventName).toBe('UserPromptSubmit');
+            expect(context).toContain('[RALPLAN INIT]');
+            expect(context).toContain('[MAGIC KEYWORD: RALPLAN]');
+            const statePath = join(tempDir, '.omc', 'state', 'sessions', sessionId, 'ralplan-state.json');
+            expect(existsSync(statePath)).toBe(true);
+            const state = JSON.parse(readFileSync(statePath, 'utf-8'));
+            expect(state.active).toBe(true);
+            expect(state.current_phase).toBe('ralplan');
+            expect(state.awaiting_confirmation).toBe(true);
+            expect(typeof state.awaiting_confirmation_set_at).toBe('string');
+            expect(state.original_prompt).toBe('/oh-my-claudecode:ralplan issue #2622');
+        }
+        finally {
+            rmSync(tempDir, { recursive: true, force: true });
+        }
     });
     it('ignores HTML comments that mention ralph and autopilot during normal review text', () => {
         const output = runKeywordDetector(`Please review this draft document for tone and clarity:
@@ -87,6 +280,166 @@ OMC Ultrawork = "특수부대 작전 반"
         expect(output.continue).toBe(true);
         expect(context).not.toContain('[MAGIC KEYWORD: ULTRAWORK]');
         expect(context).toBe('');
+    });
+    it('does not activate ultrawork for single-mode explanatory definitions followed by a budget question', () => {
+        const output = runKeywordDetector('OMC Ultrawork = "special ops". how much would it cost?');
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: ULTRAWORK]');
+        expect(context).toBe('');
+    });
+    it('does not branch pasted skill transcript payloads into a fresh Ralph invocation', () => {
+        const output = runKeywordDetector(`Investigate why this pasted transcript branched sessions:
+
+[MAGIC KEYWORD: RALPH]
+Skill: oh-my-claudecode:ralph
+User request:
+ralph fix parser`);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: RALPH]');
+        expect(context).toBe('');
+    });
+    it('does not branch pasted shell transcript lines into fresh skill invocations', () => {
+        const output = runKeywordDetector(`Summarize this log:
+$ ralph fix parser
+$ ultrawork search the codebase`);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).toBe('');
+    });
+    it('does not branch pasted git diff hunks into fresh skill invocations', () => {
+        const output = runKeywordDetector(`Please explain this diff:
+diff --git a/a b/b
+--- a/a
++++ b/b
+@@ -1,2 +1,2 @@
++ ralph fix parser
++ autopilot build me an app`);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).toBe('');
+    });
+    // Regression: issue #2541 — review-seed echo must not trip code-review / security-review alerts
+    it('does not activate code-review when prompt is echoed review-instruction text with approve/request-changes/merge-ready', () => {
+        const prompt = [
+            'You are performing a code review of PR #2541.',
+            'Reply with exactly one verdict:',
+            '- approve',
+            '- request-changes',
+            '- merge-ready',
+        ].join('\n');
+        const output = runKeywordDetector(prompt);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: CODE-REVIEW]');
+        expect(context).not.toContain('<code-review-mode>');
+        expect(context).toBe('');
+    });
+    it('does not activate security-review when prompt is echoed review-instruction text with approve/request-changes/blocked', () => {
+        const prompt = [
+            'You are performing a security review.',
+            'Choose one verdict:',
+            '- approve',
+            '- request-changes',
+            '- blocked',
+        ].join('\n');
+        const output = runKeywordDetector(prompt);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: SECURITY-REVIEW]');
+        expect(context).not.toContain('<security-review-mode>');
+        expect(context).toBe('');
+    });
+    it('still activates code-review for a genuine user request (positive control)', () => {
+        const output = runKeywordDetector('code review this diff');
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(output.continue).toBe(true);
+        expect(context).toContain('<code-review-mode>');
+        expect(context).not.toContain('[MAGIC KEYWORD: CODE-REVIEW]');
+    });
+    it('does not activate ralph for Korean banter/question wording from issue #3162', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ralph-banter-'));
+        const sessionId = 'session-3162-ralph-banter';
+        const output = runKeywordDetector('너도 ralph라도 쥐어줘야해?ㅋㅋ', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const ralphStatePath = join(cwd, '.omc', 'state', 'sessions', sessionId, 'ralph-state.json');
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: RALPH]');
+        expect(existsSync(ralphStatePath)).toBe(false);
+    });
+    it('does not activate ralph or ultrawork for Korean relationship meta-question from issue #3162', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-ultrawork-meta-'));
+        const sessionId = 'session-3162-ultrawork-meta';
+        const output = runKeywordDetector('울트라워크랑 랄프는 무슨 관계야?', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const stateDir = join(cwd, '.omc', 'state', 'sessions', sessionId);
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: RALPH]');
+        expect(context).not.toContain('[MAGIC KEYWORD: ULTRAWORK]');
+        expect(existsSync(join(stateDir, 'ralph-state.json'))).toBe(false);
+        expect(existsSync(join(stateDir, 'ultrawork-state.json'))).toBe(false);
+    });
+    it('still activates ralph and ultrawork for explicit imperative prompts from issue #3162', () => {
+        const cases = [
+            { prompt: '/ralph fix parser', mode: 'ralph' },
+            { prompt: 'run ralph on this issue', mode: 'ralph' },
+            { prompt: '랄프 켜', mode: 'ralph' },
+            { prompt: 'start ultrawork on this issue', mode: 'ultrawork' },
+            { prompt: '울트라워크 돌려', mode: 'ultrawork' },
+        ];
+        for (const { prompt, mode } of cases) {
+            const cwd = mkdtempSync(join(tmpdir(), `keyword-detector-${mode}-positive-`));
+            const sessionId = `session-3162-${mode}-positive-${prompt.replace(/\W+/g, '-')}`;
+            const output = runKeywordDetector(prompt, cwd, sessionId);
+            const context = output.hookSpecificOutput?.additionalContext ?? '';
+            expect(context).toContain(`[MAGIC KEYWORD: ${mode.toUpperCase()}]`);
+            expect(existsSync(join(cwd, '.omc', 'state', 'sessions', sessionId, `${mode}-state.json`))).toBe(true);
+        }
+    });
+    it('only activates the explicitly commanded mode in mixed Korean meta-plus-imperative prompts', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-mixed-intent-'));
+        const sessionId = 'session-3162-mixed-intent';
+        const output = runKeywordDetector('랄프랑 울트라워크는 무슨 관계야? 울트라워크 돌려', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const stateDir = join(cwd, '.omc', 'state', 'sessions', sessionId);
+        expect(context).not.toContain('[MAGIC KEYWORD: RALPH]');
+        expect(context).toContain('[MAGIC KEYWORD: ULTRAWORK]');
+        expect(existsSync(join(stateDir, 'ralph-state.json'))).toBe(false);
+        expect(existsSync(join(stateDir, 'ultrawork-state.json'))).toBe(true);
+    });
+    it('does not activate script-only uw alias for Korean banter/question wording', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-uw-banter-'));
+        const sessionId = 'session-3162-uw-banter';
+        const output = runKeywordDetector('너도 uw라도 쥐어줘야해?ㅋㅋ', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        expect(context).not.toContain('[MAGIC KEYWORD: ULTRAWORK]');
+        expect(existsSync(join(cwd, '.omc', 'state', 'sessions', sessionId, 'ultrawork-state.json'))).toBe(false);
+    });
+    // Regression: "autonomous" appearing in technical / research prose must not
+    // trigger autopilot (false positive previously created spurious
+    // autopilot-state.json and a stop-hook loop). The TS source and the
+    // templates/hooks mjs already exclude the word; this test guards the
+    // deployed scripts/keyword-detector.mjs against drift.
+    it('does not activate autopilot when "autonomous" appears in technical prose', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-autonomous-'));
+        const sessionId = 'session-autonomous-regression';
+        const output = runKeywordDetector('DriveVLA-W0: World Models Amplify Data Scaling Law in Autonomous Driving — please summarize this paper.', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const autopilotStatePath = join(cwd, '.omc', 'state', 'sessions', sessionId, 'autopilot-state.json');
+        expect(output.continue).toBe(true);
+        expect(context).not.toContain('[MAGIC KEYWORD: AUTOPILOT]');
+        expect(existsSync(autopilotStatePath)).toBe(false);
+    });
+    it('still activates autopilot for an explicit autopilot invocation (positive control)', () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'keyword-detector-autopilot-positive-'));
+        const sessionId = 'session-autopilot-positive';
+        const output = runKeywordDetector('autopilot build a todo CLI', cwd, sessionId);
+        const context = output.hookSpecificOutput?.additionalContext ?? '';
+        const autopilotStatePath = join(cwd, '.omc', 'state', 'sessions', sessionId, 'autopilot-state.json');
+        expect(output.continue).toBe(true);
+        expect(context).toContain('[MAGIC KEYWORD: AUTOPILOT]');
+        expect(existsSync(autopilotStatePath)).toBe(true);
     });
 });
 //# sourceMappingURL=keyword-detector-script.test.js.map

@@ -10,7 +10,7 @@
  *   await notify('session-start', { sessionId, projectPath, ... });
  */
 export { dispatchNotifications, sendDiscord, sendDiscordBot, sendTelegram, sendSlack, sendSlackBot, sendWebhook, } from "./dispatcher.js";
-export { formatNotification, formatSessionStart, formatSessionStop, formatSessionEnd, formatSessionIdle, formatAskUserQuestion, formatAgentCall, } from "./formatter.js";
+export { formatNotification, formatSessionStart, formatSessionStop, formatSessionEnd, formatSessionIdle, formatAskUserQuestion, formatAgentCall, parseTmuxTail, } from "./formatter.js";
 export { getCurrentTmuxSession, getCurrentTmuxPaneId, getTeamTmuxSessions, formatTmuxInfo, } from "./tmux.js";
 export { getNotificationConfig, isEventEnabled, getEnabledPlatforms, getVerbosity, getTmuxTailLines, isEventAllowedByVerbosity, shouldIncludeTmuxTail, } from "./config.js";
 export { getHookConfig, resolveEventTemplate, resetHookConfigCache, mergeHookConfigIntoNotificationConfig, } from "./hook-config.js";
@@ -23,7 +23,8 @@ import { dispatchNotifications } from "./dispatcher.js";
 import { getCurrentTmuxSession } from "./tmux.js";
 import { getHookConfig, resolveEventTemplate } from "./hook-config.js";
 import { interpolateTemplate } from "./template-engine.js";
-import { basename } from "path";
+import { basename, join } from "path";
+import { getOmcRoot } from "../lib/worktree-paths.js";
 /**
  * High-level notification function.
  *
@@ -44,9 +45,14 @@ export async function notify(event, data) {
         if (!config || !isEventEnabled(config, event)) {
             return null;
         }
-        // Verbosity filter (second gate after isEventEnabled)
+        // Verbosity filter (second gate after isEventEnabled).  An explicitly
+        // enabled ask-user-question event is user intent to surface an interactive
+        // block, so do not let the default "session" verbosity silently drop it.
         const verbosity = getVerbosity(config);
-        if (!isEventAllowedByVerbosity(verbosity, event)) {
+        const isExplicitAskUserQuestionEvent = event === "ask-user-question" &&
+            config.events?.["ask-user-question"]?.enabled === true;
+        if (!isExplicitAskUserQuestionEvent &&
+            !isEventAllowedByVerbosity(verbosity, event)) {
             return null;
         }
         // Get tmux pane ID
@@ -72,6 +78,7 @@ export async function notify(event, data) {
             iteration: data.iteration,
             maxIterations: data.maxIterations,
             question: data.question,
+            askUserQuestionPrompts: data.askUserQuestionPrompts,
             incompleteTasks: data.incompleteTasks,
             agentName: data.agentName,
             agentType: data.agentType,
@@ -85,10 +92,13 @@ export async function notify(event, data) {
             (event === "session-idle" || event === "session-end" || event === "session-stop")) {
             try {
                 const { capturePaneContent } = await import("../features/rate-limit-wait/tmux-detector.js");
+                const { getNewPaneTail } = await import("../features/rate-limit-wait/pane-fresh-capture.js");
                 const tailLines = getTmuxTailLines(config);
-                const tail = capturePaneContent(payload.tmuxPaneId, tailLines);
-                if (tail) {
-                    payload.tmuxTail = tail;
+                const rawTail = payload.projectPath
+                    ? getNewPaneTail(payload.tmuxPaneId, join(getOmcRoot(payload.projectPath), "state"), tailLines)
+                    : capturePaneContent(payload.tmuxPaneId, tailLines);
+                if (rawTail) {
+                    payload.tmuxTail = rawTail;
                     payload.maxTailLines = tailLines;
                 }
             }
@@ -141,6 +151,12 @@ export async function notify(event, data) {
                             event: payload.event,
                             createdAt: new Date().toISOString(),
                             projectPath: payload.projectPath,
+                            ...(payload.event === "ask-user-question" && payload.askUserQuestionPrompts?.[0]
+                                ? {
+                                    askUserQuestionOptionCount: payload.askUserQuestionPrompts[0].options.length,
+                                    askUserQuestionAllowOther: payload.askUserQuestionPrompts[0].allowOther !== false,
+                                }
+                                : {}),
                         });
                     }
                 }

@@ -23,11 +23,11 @@ hasPrd, getPrdCompletionStatus, getRalphContext, setCurrentStory, enablePrdMode,
 // ============================================================================
 export { 
 // File operations
-readPrd, writePrd, findPrdPath, getPrdPath, getOmcPrdPath, 
+readPrd, writePrd, findPrdPath, getPrdPath, getOmcPrdPath, getSessionPrdPath, getLegacyStatePrdPath, 
 // PRD status & operations
-getPrdStatus, markStoryComplete, markStoryIncomplete, getStory, getNextStory, 
+getPrdStatus, markStoryComplete, markStoryIncomplete, markStoryArchitectVerified, getStory, getNextStory, 
 // PRD creation
-createPrd, createSimplePrd, initPrd, 
+createPrd, createSimplePrd, initPrd, ensurePrdForStartup, 
 // Formatting
 formatPrdStatus, formatStory, formatPrd, formatNextStoryPrompt, 
 // Constants

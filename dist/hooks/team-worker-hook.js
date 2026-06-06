@@ -16,6 +16,7 @@ import { readFile, writeFile, mkdir, appendFile, rename, stat } from 'fs/promise
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { createSwallowedErrorLogger } from '../lib/swallowed-error.js';
+import { getOmcRoot } from '../lib/worktree-paths.js';
 // ── Env helpers ────────────────────────────────────────────────────────────
 function safeString(value, fallback = '') {
     if (typeof value === 'string')
@@ -112,13 +113,11 @@ async function writeJsonAtomic(path, value) {
     await rename(tmpPath, path);
 }
 async function defaultTmuxSendKeys(target, text, literal = false) {
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
+    const { tmuxExecAsync } = await import('../cli/tmux-utils.js');
     const args = literal
         ? ['send-keys', '-t', target, '-l', text]
         : ['send-keys', '-t', target, text];
-    await execFileAsync('tmux', args, { timeout: 3000 });
+    await tmuxExecAsync(args, { timeout: 3000 });
 }
 const defaultTmux = {
     async sendKeys(target, text, literal = false) {
@@ -409,7 +408,7 @@ export async function maybeNotifyLeaderAllWorkersIdle(params) {
 }
 // ── Main handler ───────────────────────────────────────────────────────────
 export async function handleWorkerTurn(teamName, workerName, cwd, tmux) {
-    const stateDir = join(cwd, '.omc', 'state');
+    const stateDir = join(getOmcRoot(cwd), 'state');
     const parsedTeamWorker = { teamName, workerName };
     await updateWorkerHeartbeat(stateDir, teamName, workerName);
     await maybeNotifyLeaderWorkerIdle({ cwd, stateDir, parsedTeamWorker, tmux });

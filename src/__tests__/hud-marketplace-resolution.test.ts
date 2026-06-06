@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { OMC_PLUGIN_ROOT_ENV } from '../lib/env-vars.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,6 +30,18 @@ afterEach(() => {
   }
 });
 
+// plugin-setup.mjs rewrites hooks/hooks.json with an absolute node binary path
+// (it always resolves the path relative to its own __dirname, ignoring CLAUDE_CONFIG_DIR).
+// Restore the committed version after all tests in this file so sibling test
+// suites (e.g. setup-contracts-regression) don't see a mutated working tree.
+afterAll(() => {
+  try {
+    execFileSync('git', ['checkout', '--', 'hooks/hooks.json'], { cwd: root, stdio: 'pipe' });
+  } catch {
+    // Non-fatal: hooks.json may already be clean or git may be unavailable.
+  }
+});
+
 describe('HUD marketplace resolution', () => {
   it('omc-hud.mjs converts absolute HUD paths to file URLs before dynamic imports', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'omc-hud-wrapper-'));
@@ -56,6 +68,11 @@ describe('HUD marketplace resolution', () => {
       statusLine?: { command?: string };
     };
     expect(settings.statusLine?.command).toContain(`${join(configDir, 'hud', 'omc-hud.mjs').replace(/\\/g, '/')}`);
+    if (process.platform !== 'win32') {
+      expect(settings.statusLine?.command).toContain('omc-hud-cache.sh');
+      expect(existsSync(join(configDir, 'hud', 'omc-hud-cache.sh'))).toBe(true);
+      expect(existsSync(join(configDir, 'hud', 'find-node.sh'))).toBe(true);
+    }
     expect(existsSync(join(configDir, '.omc-config.json'))).toBe(true);
 
     const content = readFileSync(hudScriptPath, 'utf-8');

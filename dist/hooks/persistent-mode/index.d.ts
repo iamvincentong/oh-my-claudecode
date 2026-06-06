@@ -10,6 +10,7 @@
  * Priority order: Ralph > Ultrawork > Todo Continuation
  */
 import { StopContext } from '../todo-continuation/index.js';
+import type { IdleNotificationRepoState } from './idle-repo-state.js';
 export interface ToolErrorState {
     tool_name: string;
     tool_input_preview?: string;
@@ -23,7 +24,7 @@ export interface PersistentModeResult {
     /** Message to inject into context */
     message: string;
     /** Which mode triggered the block */
-    mode: 'ralph' | 'ultrawork' | 'todo-continuation' | 'autopilot' | 'team' | 'ralplan' | 'none';
+    mode: 'ralph' | 'ultrawork' | 'todo-continuation' | 'autopilot' | 'autoresearch' | 'team' | 'ralplan' | 'none';
     /** Additional metadata */
     metadata?: {
         todoCount?: number;
@@ -38,6 +39,12 @@ export interface PersistentModeResult {
     };
 }
 export declare function shouldWriteStateBack(statePath: string | null | undefined): boolean;
+/**
+ * Pending owned async work (background Bash/Task or an armed wakeup) means the
+ * agent is legitimately waiting for an external notification/resume. In that
+ * window persistent modes should not inject a "stalled" reinforcement.
+ */
+export declare function hasPendingOwnedAsyncWork(directory: string, sessionId?: string): boolean;
 /**
  * Read last tool error from state directory.
  * Returns null if file doesn't exist or error is stale (>60 seconds old).
@@ -62,14 +69,20 @@ export declare function resetTodoContinuationAttempts(sessionId: string): void;
  */
 export declare function getIdleNotificationCooldownSeconds(): number;
 /**
+ * OpenClaw stop wakes should usually bypass idle cooldowns, but unchanged
+ * zero-backlog repo state should stay suppressed so stale repo-level CI replay
+ * bursts do not re-arm after the actionable backlog is already zero.
+ */
+export declare function shouldWakeOpenClawOnStop(stateDir: string, sessionId?: string, repoState?: IdleNotificationRepoState | null): boolean;
+/**
  * Check whether the session-idle notification cooldown has elapsed.
  * Returns true if the notification should be sent.
  */
-export declare function shouldSendIdleNotification(stateDir: string, sessionId?: string): boolean;
+export declare function shouldSendIdleNotification(stateDir: string, sessionId?: string, repoState?: IdleNotificationRepoState | null): boolean;
 /**
  * Record that the session-idle notification was sent at the current timestamp.
  */
-export declare function recordIdleNotificationSent(stateDir: string, sessionId?: string): void;
+export declare function recordIdleNotificationSent(stateDir: string, sessionId?: string, repoState?: IdleNotificationRepoState | null): void;
 /**
  * Main persistent mode checker
  * Checks all persistent modes in priority order and returns appropriate action

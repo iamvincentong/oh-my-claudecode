@@ -1,11 +1,11 @@
 import { spawnSync } from 'child_process';
-import { isAbsolute, normalize, win32 as win32Path } from 'path';
+import { isAbsolute, normalize, sep, win32 as win32Path } from 'path';
 import { validateTeamName } from './team-name.js';
 import { normalizeToCcAlias } from '../features/delegation-enforcer.js';
 import { isBedrock, isVertexAI, isProviderSpecificModelId } from '../config/models.js';
 import { isExternalLLMDisabled } from '../lib/security-config.js';
 
-export type CliAgentType = 'claude' | 'codex' | 'gemini';
+export type CliAgentType = 'claude' | 'codex' | 'gemini' | 'cursor' | 'grok';
 
 export interface CliAgentContract {
   agentType: CliAgentType;
@@ -15,7 +15,7 @@ export interface CliAgentContract {
   parseOutput(rawOutput: string): string;
   /** Whether this agent supports a prompt/headless mode that bypasses TUI input */
   supportsPromptMode?: boolean;
-  /** CLI flag for prompt mode (e.g., '-i' for gemini) */
+  /** CLI flag for prompt mode (e.g., '-p' for gemini) */
   promptModeFlag?: string;
 }
 
@@ -30,6 +30,12 @@ export interface WorkerLaunchConfig {
    * Used by runtime preflight validation to ensure spawns are pinned.
    */
   resolvedBinaryPath?: string;
+  /**
+   * Optional path the worker writes its structured verdict JSON to
+   * (used by the CLI-worker output contract for critic/reviewer stages).
+   * Consumed by the worker-completion handler in runtime-v2.
+   */
+  output_file?: string;
 }
 
 /** @deprecated Backward-compat shim for older team API consumers. */
@@ -60,6 +66,7 @@ function getTrustedPrefixes(): string[] {
     trusted.push(`${home}/.local/bin`);
     trusted.push(`${home}/.nvm/`);
     trusted.push(`${home}/.cargo/bin`);
+    trusted.push(`${home}/.grok/bin`);
   }
 
   const custom = (process.env.OMC_TRUSTED_CLI_DIRS ?? '')
@@ -74,7 +81,17 @@ function getTrustedPrefixes(): string[] {
 
 function isTrustedPrefix(resolvedPath: string): boolean {
   const normalized = normalize(resolvedPath);
-  return getTrustedPrefixes().some(prefix => normalized.startsWith(normalize(prefix)));
+  return getTrustedPrefixes().some(prefix => {
+    // `normalize` strips trailing separators, so a plain `startsWith` would treat
+    // a sibling whose name merely begins with the prefix as trusted — e.g.
+    // `/usr/bin` would match `/usr/bin-malicious/grok`, and `~/.local/bin` would
+    // match `~/.local/bin-evil/x`. Enforce a directory boundary: the resolved
+    // path must be the trusted dir itself or a true descendant (prefix + sep).
+    const p = normalize(prefix);
+    if (normalized === p) return true;
+    const withSep = p.endsWith(sep) ? p : p + sep;
+    return normalized.startsWith(withSep);
+  });
 }
 
 function assertBinaryName(binary: string): void {
@@ -149,7 +166,19 @@ export function validateCliBinaryPath(binary: string): CliBinaryValidation {
 export const _testInternals = {
   UNTRUSTED_PATH_PATTERNS,
   getTrustedPrefixes,
+  isTrustedPrefix,
 };
+
+/**
+ * Detect parent launch env for Claude Code API-key auth.
+ *
+ * Claude Code's `--dangerously-skip-permissions` only bypasses permission
+ * prompts. When an API key is present, `--bare` is needed to avoid the
+ * interactive OAuth/session login path for team worker panes.
+ */
+export function shouldUseClaudeBareMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return typeof env.ANTHROPIC_API_KEY === 'string' && env.ANTHROPIC_API_KEY.trim().length > 0;
+}
 
 const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
   claude: {
@@ -158,6 +187,9 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     installInstructions: 'Install Claude CLI: https://claude.ai/download',
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['--dangerously-skip-permissions'];
+      if (shouldUseClaudeBareMode() && !extraFlags.includes('--bare')) {
+        args.push('--bare');
+      }
       if (model) {
         // Provider-specific model IDs (Bedrock, Vertex) must be passed as-is.
         // Normalizing them to aliases like "sonnet" causes Claude Code to expand
@@ -176,9 +208,10 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     agentType: 'codex',
     binary: 'codex',
     installInstructions: 'Install Codex CLI: npm install -g @openai/codex',
-    supportsPromptMode: true,
-    // Codex accepts prompt as a positional argument (no flag needed):
-    //   codex [OPTIONS] [PROMPT]
+    // Team workers must be persistent interactive panes. Do not use `codex exec`
+    // or positional prompt mode here; runtime dispatch writes inbox.md and nudges
+    // the live Codex TUI with `codex` as the worker process.
+    supportsPromptMode: false,
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['--dangerously-bypass-approvals-and-sandbox'];
       if (model) args.push('--model', model);
@@ -208,11 +241,44 @@ const CONTRACTS: Record<CliAgentType, CliAgentContract> = {
     binary: 'gemini',
     installInstructions: 'Install Gemini CLI: npm install -g @google/gemini-cli',
     supportsPromptMode: true,
-    promptModeFlag: '-i',
+    promptModeFlag: '-p',
     buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
       const args = ['--approval-mode', 'yolo'];
       if (model) args.push('--model', model);
       return [...args, ...extraFlags];
+    },
+    parseOutput(rawOutput: string): string {
+      return rawOutput.trim();
+    },
+  },
+  grok: {
+    agentType: 'grok',
+    binary: 'grok',
+    installInstructions: 'Install Grok Build: https://build.grok.com',
+    supportsPromptMode: true,
+    promptModeFlag: '-p',
+    buildLaunchArgs(model?: string, extraFlags: string[] = []): string[] {
+      const args = ['--always-approve'];
+      if (model) args.push('--model', model);
+      return [...args, ...extraFlags];
+    },
+    parseOutput(rawOutput: string): string {
+      return rawOutput.trim();
+    },
+  },
+  cursor: {
+    agentType: 'cursor',
+    binary: 'cursor-agent',
+    installInstructions: 'Install Cursor Agent CLI: see https://docs.cursor.com/cli',
+    // cursor-agent runs as an interactive REPL — no exit-on-complete prompt mode.
+    // Keep supportsPromptMode false so the verdict-file contract path
+    // (CONTRACT_ROLES + shouldInjectContract) skips this provider; cursor
+    // workers participate as executors only.
+    supportsPromptMode: false,
+    buildLaunchArgs(_model?: string, extraFlags: string[] = []): string[] {
+      // Minimal flags — cursor-agent owns its own session/auth state.
+      // The model is selected interactively inside cursor-agent itself.
+      return [...extraFlags];
     },
     parseOutput(rawOutput: string): string {
       return rawOutput.trim();
@@ -338,6 +404,8 @@ const WORKER_MODEL_ENV_ALLOWLIST = [
   'OMC_CODEX_DEFAULT_MODEL',
   'OMC_EXTERNAL_MODELS_DEFAULT_GEMINI_MODEL',
   'OMC_GEMINI_DEFAULT_MODEL',
+  'OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL',
+  'OMC_GROK_DEFAULT_MODEL',
 ] as const;
 
 export function getWorkerEnv(
@@ -438,7 +506,7 @@ export function getPromptModeArgs(agentType: CliAgentType, instruction: string):
   if (!contract.supportsPromptMode) {
     return [];
   }
-  // If a flag is defined (e.g. gemini's '-i'), prepend it; otherwise the
+  // If a flag is defined (e.g. gemini's '-p'), prepend it; otherwise the
   // instruction is passed as a positional argument (e.g. codex [PROMPT]).
   if (contract.promptModeFlag) {
     return [contract.promptModeFlag, instruction];

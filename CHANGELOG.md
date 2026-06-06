@@ -1,30 +1,45 @@
-# oh-my-claudecode v4.11.3: Bug Fixes
+# oh-my-claudecode v4.14.5: Japanese katakana keyword, add Grok Build, full multi-repo workspace
 
 ## Release Notes
 
-Release with **7 bug fixes** across **9 merged PRs**.
+Release with **4 new features**, **1 security improvement**, **5 bug fixes**, **2 other changes** across **48 merged PRs**.
 
 ### Highlights
 
-- **fix(node): prefer PATH node over unstable execPath** (#2400)
-- **fix(hooks): prevent .js false positives in .json/.jsonl source extension check** (#2395)
-- **fix(autoresearch): strip TMUX env for nested tmux compatibility** (#2385)
+- **feat(keyword-detector): Japanese katakana keyword detection (with 〜について教えて informational guard)** (#3193)
+- **feat(team): add Grok Build as a team worker + ask provider** (#3159)
+- **feat(multi-repo): full multi-repo workspace support**
+- **feat: persist ultragoal and enforce Claude goal activation** (#3102)
+- **fix(security): enforce directory boundary in isTrustedPrefix (CLI trusted-path)** (#3152)
+
+### New Features
+
+- **feat(keyword-detector): Japanese katakana keyword detection (with 〜について教えて informational guard)** (#3193)
+- **feat(team): add Grok Build as a team worker + ask provider** (#3159)
+- **feat(multi-repo): full multi-repo workspace support**
+- **feat: persist ultragoal and enforce Claude goal activation** (#3102)
+
+### Security & Hardening
+
+- **fix(security): enforce directory boundary in isTrustedPrefix (CLI trusted-path)** (#3152)
 
 ### Bug Fixes
 
-- **fix(node): prefer PATH node over unstable execPath** (#2400)
-- **fix(hooks): prevent .js false positives in .json/.jsonl source extension check** (#2395)
-- **fix(autoresearch): strip TMUX env for nested tmux compatibility** (#2385)
-- **fix: resolve asymmetric symlink path resolution** (#2372)
-- **fix(installer): detect enabledPlugins (Claude Code 1.x) in hasEnabledOmcPlugin (#2252 follow-up)** (#2371)
-- **fix: deactivate stale ralplan stop enforcement after consensus completion** (#2370)
-- **fix(hud): fall back to path-based version when package.json is missing** (#2362)
+- **fix(plugin): keep source hooks manifest direct-node** (#3201)
+- **fix(multi-repo): validate team .omc paths against getOmcRoot, not the sub-repo**
+- **fix(ci): make the full test suite green on Linux after the dev merge**
+- **fix(multi-repo): accept repo subdirs as cwd; stop workspace search at $HOME**
+- **fix(multi-repo): route dev-merged paths through getOmcRoot/resolveOmcStateRoot**
 
 ### Documentation
 
-- **docs: document --plugin-dir and add CONTRIBUTING.md for local development** (#2399)
-- **docs(getting-started): document plugin + npm CLI as two coexisting surfaces** (#2367)
+- **docs: add model × agent compatibility matrix (#3092)** (#3092)
+
+### Other Changes
+
+- **ci: use gajae self-hosted linux runner** (#3180)
+- **chore(models): bump built-in Opus HIGH default to Claude Opus 4.8** (#3175)
 
 ### Stats
 
-- **9 PRs merged** | **0 new features** | **7 bug fixes** | **0 security/hardening improvements** | **0 other changes**
+- **48 PRs merged** | **4 new features** | **5 bug fixes** | **1 security/hardening improvement** | **2 other changes**

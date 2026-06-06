@@ -15,6 +15,7 @@ import { readAutopilotState, writeAutopilotState, transitionPhase, transitionRal
 import { getPhasePrompt } from "./prompts.js";
 import { readLastToolError, getToolErrorRetryGuidance, } from "../persistent-mode/index.js";
 import { readPipelineTracking, hasPipelineTracking, getCurrentStageAdapter, getCurrentCompletionSignal, advanceStage, incrementStageIteration, generateTransitionPrompt, formatPipelineHUD, } from "./pipeline.js";
+import { formatAutopilotRuntimeInsight } from "./runtime-insight.js";
 // ============================================================================
 // SIGNAL DETECTION
 // ============================================================================
@@ -113,6 +114,22 @@ function isAwaitingConfirmation(state) {
     }
     return Date.now() - setAtMs < AWAITING_CONFIRMATION_TTL_MS;
 }
+function isOrphanedRoutingEchoState(state) {
+    const phase = typeof state.phase === "string" ? state.phase.trim().toLowerCase() : "";
+    if (phase && phase !== "unspecified")
+        return false;
+    const stateRecord = state;
+    const promptText = [
+        stateRecord.originalIdea,
+        stateRecord.original_idea,
+        stateRecord.prompt,
+        stateRecord.task_description,
+    ]
+        .filter((value) => typeof value === "string")
+        .join("\n")
+        .trim();
+    return /^\[MAGIC KEYWORDS?(?: DETECTED)?:\s*AUTOPILOT\s*\]\s*$/i.test(promptText);
+}
 /**
  * Get the next phase after current phase
  */
@@ -147,6 +164,9 @@ export async function checkAutopilot(sessionId, directory) {
         return null;
     }
     if (isAwaitingConfirmation(state)) {
+        return null;
+    }
+    if (isOrphanedRoutingEchoState(state)) {
         return null;
     }
     // Check hard max iterations (global security limit)
@@ -242,6 +262,7 @@ function generateContinuationPrompt(state, directory, sessionId) {
     // Read tool error before generating message
     const toolError = readLastToolError(directory);
     const errorGuidance = getToolErrorRetryGuidance(toolError);
+    const runtimeInsight = formatAutopilotRuntimeInsight(directory, sessionId);
     // Increment iteration
     state.iteration += 1;
     writeAutopilotState(directory, state, sessionId);
@@ -253,6 +274,7 @@ function generateContinuationPrompt(state, directory, sessionId) {
     });
     const continuationPrompt = `<autopilot-continuation>
 ${errorGuidance ? errorGuidance + "\n" : ""}
+${runtimeInsight ? `${runtimeInsight}\n\n` : ""}
 [AUTOPILOT - PHASE: ${state.phase.toUpperCase()} | ITERATION ${state.iteration}/${state.max_iterations}]
 
 Your previous response did not signal phase completion. Continue working on the current phase.
@@ -369,6 +391,7 @@ ${stagePrompt}
     incrementStageIteration(directory, sessionId);
     const toolError = readLastToolError(directory);
     const errorGuidance = getToolErrorRetryGuidance(toolError);
+    const runtimeInsight = formatAutopilotRuntimeInsight(directory, sessionId);
     // Increment overall iteration
     state.iteration += 1;
     writeAutopilotState(directory, state, sessionId);
@@ -386,6 +409,7 @@ ${stagePrompt}
     const stagePrompt = currentAdapter.getPrompt(context);
     const continuationPrompt = `<autopilot-pipeline-continuation>
 ${errorGuidance ? errorGuidance + "\n" : ""}
+${runtimeInsight ? `${runtimeInsight}\n\n` : ""}
 ${hudLine}
 
 [AUTOPILOT PIPELINE - STAGE: ${currentAdapter.name.toUpperCase()} | ITERATION ${state.iteration}/${state.max_iterations}]

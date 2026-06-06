@@ -16,6 +16,8 @@ import { readFile, writeFile, mkdir, readdir, appendFile, rename, rm, stat } fro
 import { existsSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { createSwallowedErrorLogger } from '../lib/swallowed-error.js';
+import { tmuxExecAsync } from '../cli/tmux-utils.js';
+import { getOmcRoot } from '../lib/worktree-paths.js';
 // ── Helpers ────────────────────────────────────────────────────────────────
 function safeString(value, fallback = '') {
     if (typeof value === 'string')
@@ -276,6 +278,13 @@ function paneIsBootstrapping(captured) {
         || /\bmodel:\s*loading\b/i.test(line)
         || /\bconnecting\s+to\b/i.test(line));
 }
+function paneLineLooksLikeIdlePrompt(line) {
+    // Claude Code can render its idle input prompt inside a box/left gutter
+    // (for example "│ ❯"). Treat that as ready while still requiring the prompt
+    // glyph to be at the visual start of the line, not embedded in arbitrary
+    // output text.
+    return /^\s*(?:[│┃║▌▐▏▕╎┆┊]\s*)?[›>❯]\s*/u.test(line);
+}
 function paneLooksReady(captured) {
     const content = safeString(captured).trimEnd();
     if (content === '')
@@ -287,24 +296,9 @@ function paneLooksReady(captured) {
     if (paneIsBootstrapping(content))
         return false;
     const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
-    if (/^\s*[›>❯]\s*/u.test(lastLine))
+    if (paneLineLooksLikeIdlePrompt(lastLine))
         return true;
-    const hasCodexPromptLine = lines.some((line) => /^\s*›\s*/u.test(line));
-    const hasClaudePromptLine = lines.some((line) => /^\s*❯\s*/u.test(line));
-    if (hasCodexPromptLine || hasClaudePromptLine)
-        return true;
-    return false;
-}
-function resolveWorkerCliForRequest(request, config) {
-    const workers = Array.isArray(config.workers) ? config.workers : [];
-    const idx = Number.isFinite(request.worker_index) ? Number(request.worker_index) : null;
-    if (idx !== null) {
-        const worker = workers.find((c) => Number(c.index) === idx);
-        const workerCli = safeString(worker?.worker_cli).trim().toLowerCase();
-        if (workerCli === 'claude')
-            return 'claude';
-    }
-    return 'codex';
+    return lines.some(paneLineLooksLikeIdlePrompt);
 }
 async function runProcess(cmd, args, timeoutMs) {
     const { execFile } = await import('child_process');
@@ -319,18 +313,23 @@ async function defaultInjector(request, config, _cwd) {
         return { ok: false, reason: 'missing_tmux_target' };
     const paneTarget = target.value;
     try {
-        const inMode = await runProcess('tmux', ['display-message', '-t', paneTarget, '-p', '#{pane_in_mode}'], 1000);
+        const inMode = await tmuxExecAsync(['display-message', '-t', paneTarget, '-p', '#{pane_in_mode}'], { timeout: 1000 });
         if (safeString(inMode.stdout).trim() === '1') {
             return { ok: false, reason: 'scroll_active' };
         }
     }
     catch { /* best effort */ }
-    const submitKeyPresses = resolveWorkerCliForRequest(request, config) === 'claude' ? 1 : 2;
+    // Claude Code v2.1.x sometimes swallows a single Enter during TUI state
+    // transitions (input-handler bind race) — same root cause documented at
+    // runtime-v2.ts:788-793 for the startup path. Send 2 Enters here too so
+    // the dispatch path does not stall with the trigger text typed but never
+    // submitted.
+    const submitKeyPresses = 2;
     const attemptCountAtStart = Number.isFinite(request.attempt_count) ? Math.max(0, Math.floor(request.attempt_count)) : 0;
     let preCaptureHasTrigger = false;
     if (attemptCountAtStart >= 1) {
         try {
-            const preCapture = await runProcess('tmux', ['capture-pane', '-t', paneTarget, '-p', '-S', '-8'], 2000);
+            const preCapture = await tmuxExecAsync(['capture-pane', '-t', paneTarget, '-p', '-S', '-8'], { timeout: 2000 });
             preCaptureHasTrigger = capturedPaneContainsTrigger(preCapture.stdout, request.trigger_message);
         }
         catch {
@@ -340,17 +339,17 @@ async function defaultInjector(request, config, _cwd) {
     const shouldTypePrompt = attemptCountAtStart === 0 || !preCaptureHasTrigger;
     if (shouldTypePrompt) {
         if (attemptCountAtStart >= 1) {
-            await runProcess('tmux', ['send-keys', '-t', paneTarget, 'C-u'], 1000).catch(() => { });
+            await tmuxExecAsync(['send-keys', '-t', paneTarget, 'C-u'], { timeout: 1000 }).catch(() => { });
             await new Promise((r) => setTimeout(r, 50));
         }
         // Strip control characters (including newlines) from trigger_message to prevent
         // keystroke injection — tmux send-keys -l sends literal keystrokes, so a \n
         // in the message would execute as Enter in the target pane's shell.
         const sanitizedMessage = request.trigger_message.replace(/[\x00-\x1f\x7f]/g, '');
-        await runProcess('tmux', ['send-keys', '-t', paneTarget, '-l', sanitizedMessage], 3000);
+        await tmuxExecAsync(['send-keys', '-t', paneTarget, '-l', sanitizedMessage], { timeout: 3000 });
     }
     for (let i = 0; i < submitKeyPresses; i++) {
-        await runProcess('tmux', ['send-keys', '-t', paneTarget, 'C-m'], 3000);
+        await tmuxExecAsync(['send-keys', '-t', paneTarget, 'C-m'], { timeout: 3000 });
         if (i < submitKeyPresses - 1) {
             await new Promise((r) => setTimeout(r, 100));
         }
@@ -359,8 +358,8 @@ async function defaultInjector(request, config, _cwd) {
     for (let round = 0; round < INJECT_VERIFY_ROUNDS; round++) {
         await new Promise((r) => setTimeout(r, INJECT_VERIFY_DELAY_MS));
         try {
-            const narrowCap = await runProcess('tmux', ['capture-pane', '-t', paneTarget, '-p', '-S', '-8'], 2000);
-            const wideCap = await runProcess('tmux', ['capture-pane', '-t', paneTarget, '-p'], 2000);
+            const narrowCap = await tmuxExecAsync(['capture-pane', '-t', paneTarget, '-p', '-S', '-8'], { timeout: 2000 });
+            const wideCap = await tmuxExecAsync(['capture-pane', '-t', paneTarget, '-p'], { timeout: 2000 });
             if (paneHasActiveTask(wideCap.stdout)) {
                 return { ok: true, reason: 'tmux_send_keys_confirmed_active_task', pane: paneTarget };
             }
@@ -375,7 +374,7 @@ async function defaultInjector(request, config, _cwd) {
         }
         catch { /* capture failed; retry */ }
         for (let i = 0; i < submitKeyPresses; i++) {
-            await runProcess('tmux', ['send-keys', '-t', paneTarget, 'C-m'], 3000).catch(() => { });
+            await tmuxExecAsync(['send-keys', '-t', paneTarget, 'C-m'], { timeout: 3000 }).catch(() => { });
         }
     }
     return { ok: true, reason: 'tmux_send_keys_unconfirmed', pane: paneTarget };
@@ -473,8 +472,9 @@ function shouldSkipRequest(request) {
 }
 export async function drainPendingTeamDispatch(options = { cwd: '' }) {
     const { cwd } = options;
-    const stateDir = options.stateDir ?? join(cwd, '.omc', 'state');
-    const logsDir = options.logsDir ?? join(cwd, '.omc', 'logs');
+    const omcRoot = getOmcRoot(cwd);
+    const stateDir = options.stateDir ?? join(omcRoot, 'state');
+    const logsDir = options.logsDir ?? join(omcRoot, 'logs');
     const maxPerTick = options.maxPerTick ?? 5;
     const injector = options.injector ?? defaultInjector;
     if (safeString(process.env.OMC_TEAM_WORKER)) {

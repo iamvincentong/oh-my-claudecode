@@ -7,7 +7,7 @@ import { buildWorkerArgv, resolveValidatedBinaryPath, getWorkerEnv as getModelWo
 import { validateTeamName } from './team-name.js';
 import {
   createTeamSession, spawnWorkerInPane, sendToWorker,
-  isWorkerAlive, killTeamSession, resolveSplitPaneWorkerPaneIds, waitForPaneReady, applyMainVerticalLayout,
+  isWorkerAlive, killTeamSession, resolveSplitPaneWorkerPaneIds, waitForPaneReady, applyMainVerticalLayout, killTeamPane,
   type TeamSession, type WorkerPaneConfig,
 } from './tmux-session.js';
 import {
@@ -505,7 +505,7 @@ export async function monitorTeam(teamName: string, cwd: string, workerPaneIds: 
 
     workers.push(status);
     if (!alive) deadWorkers.push(wName);
-    // Note: CLI workers (codex/gemini) may not write heartbeat.json — stall is advisory only
+    // Note: CLI workers (codex/gemini/grok) may not write heartbeat.json — stall is advisory only
   }
   const workerScanMs = Date.now() - workerScanStartedAt;
 
@@ -735,6 +735,11 @@ export async function spawnWorkerForTask(
         || process.env.OMC_GEMINI_DEFAULT_MODEL
         || undefined;
     }
+    if (agentType === 'grok') {
+      return process.env.OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL
+        || process.env.OMC_GROK_DEFAULT_MODEL
+        || undefined;
+    }
     // Claude agents: resolve Bedrock/Vertex model when on those providers
     return resolveClaudeWorkerModel();
   })();
@@ -749,6 +754,8 @@ export async function spawnWorkerForTask(
 
   // For prompt-mode agents (e.g. Gemini Ink TUI), pass instruction via CLI
   // flag so tmux send-keys never needs to interact with the TUI input widget.
+  // Codex and Claude team workers are persistent interactive panes and are
+  // nudged through the inbox transport instead of `codex exec`/print modes.
   if (usePromptMode) {
     const promptArgs = getPromptModeArgs(agentType, generateTriggerMessage(runtime.teamName, workerNameValue));
     launchArgs.push(...promptArgs);
@@ -799,7 +806,8 @@ export async function spawnWorkerForTask(
     const notified = await notifyPaneWithRetry(
       runtime.sessionName,
       paneId,
-      generateTriggerMessage(runtime.teamName, workerNameValue)
+      generateTriggerMessage(runtime.teamName, workerNameValue),
+      1
     );
     if (!notified) {
       await killWorkerPane(runtime, workerNameValue, paneId);
@@ -822,7 +830,7 @@ export async function killWorkerPane(
   paneId: string
 ): Promise<void> {
   try {
-    await tmuxExecAsync(['kill-pane', '-t', paneId]);
+    await killTeamPane(paneId);
   } catch {
     // idempotent: pane may already be gone
   }
@@ -919,11 +927,11 @@ export async function shutdownTeam(
 
   const configData = await readJsonSafe<TeamConfig>(join(root, 'config.json'));
 
-  // CLI workers (claude/codex/gemini tmux pane processes) never write shutdown-ack.json.
+  // CLI workers (claude/codex/gemini/grok tmux pane processes) never write shutdown-ack.json.
   // Polling for ACK files on CLI worker teams wastes the full timeoutMs on every shutdown.
   // Detect CLI worker teams by checking if all agent types are known CLI types, and skip
   // ACK polling — the tmux kill below handles process cleanup instead.
-  const CLI_AGENT_TYPES = new Set<string>(['claude', 'codex', 'gemini']);
+  const CLI_AGENT_TYPES = new Set<string>(['claude', 'codex', 'gemini', 'grok']);
   const agentTypes: string[] = configData?.agentTypes ?? [];
   const isCliWorkerTeam = agentTypes.length > 0 && agentTypes.every(t => CLI_AGENT_TYPES.has(t));
 

@@ -11,9 +11,8 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'fs';
-import { join, relative } from 'path';
+import { dirname, join, relative } from 'path';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const REPO_ROOT = join(__dirname, '..', '..');
@@ -177,6 +176,49 @@ describe('Contract 2: no unguarded $HOME/.claude in shell/script files', () => {
         }
     });
 });
+// ── Contract 2b: setup jq writes must not truncate user config ────────────────
+// Issue #2957 — `jq ... > "$CONFIG_FILE"` opens/truncates the config before
+// command-not-found can fail when jq is missing. Setup docs/scripts must fail
+// before destination redirection and write through temp files.
+describe('Contract 2b: setup jq writes are guarded against truncation', () => {
+    const SETUP_MUTATION_FILES = [
+        join(REPO_ROOT, 'skills', 'omc-setup', 'phases', '02-configure.md'),
+        join(REPO_ROOT, 'skills', 'omc-setup', 'phases', '03-integrations.md'),
+        join(REPO_ROOT, 'scripts', 'setup-progress.sh'),
+    ];
+    const directJqRedirectViolations = [];
+    const missingPreflightViolations = [];
+    for (const file of SETUP_MUTATION_FILES) {
+        const content = readFileSync(file, 'utf-8');
+        const rel = relPath(file);
+        if (content.includes('jq') && !/command -v jq/.test(content)) {
+            missingPreflightViolations.push(rel);
+        }
+        const logicalCommands = content.replace(/\\\r?\n/g, ' ');
+        const directRedirectPattern = /(?:echo|printf|cat|jq)\b[^;\n]*\bjq\b[^;\n]*>\s*(?:"\$(?:\{)?(?:CONFIG_FILE|SETTINGS_FILE)(?:\})?"|\$\{(?:CONFIG_FILE|SETTINGS_FILE)\})/g;
+        for (const match of logicalCommands.matchAll(directRedirectPattern)) {
+            directJqRedirectViolations.push({
+                file: rel,
+                command: match[0].trim(),
+            });
+        }
+    }
+    it('preflights jq before setup files use it for JSON mutation', () => {
+        if (missingPreflightViolations.length > 0) {
+            expect.fail(`Setup files use jq without a command -v jq preflight:\n` +
+                missingPreflightViolations.map(file => `  ${file}`).join('\n'));
+        }
+    });
+    it('does not redirect jq output directly to live setup config/settings files', () => {
+        if (directJqRedirectViolations.length > 0) {
+            expect.fail(`Found destructive jq redirects that can truncate live setup files:\n` +
+                directJqRedirectViolations
+                    .map(v => `  ${v.file}: ${v.command}`)
+                    .join('\n') +
+                `\n\nWrite jq output to a temp file and mv it into place only after jq succeeds.`);
+        }
+    });
+});
 // ── Contract 3: No raw __dirname path resolution in installer outside getPackageDir() ──
 // PR #2347 — __dirname is undefined in ESM bundles; must use getPackageDir()
 describe('Contract 3: no raw __dirname path resolution in installer outside getPackageDir()', () => {
@@ -332,6 +374,9 @@ describe('Contract 5: no hardcoded ~/.claude in LLM-consumed artifacts', () => {
 // Issue #2348 — plugin hook delivery must be portable
 describe('Contract 9: hooks/hooks.json portability', () => {
     const HOOKS_JSON_PATH = join(REPO_ROOT, 'hooks', 'hooks.json');
+    // This suite checks the current worktree source manifest directly. Do not
+    // restore hooks/hooks.json from git here: hook portability hotfixes intentionally
+    // change that source file, and a checkout would hide the working-tree contract.
     it('all hook commands reference $CLAUDE_PLUGIN_ROOT', () => {
         if (!existsSync(HOOKS_JSON_PATH))
             return;
@@ -352,6 +397,53 @@ describe('Contract 9: hooks/hooks.json portability', () => {
             const details = violations.map(v => `  ${v.event}: ${v.command}`).join('\n');
             expect.fail(`Found hook commands not using $CLAUDE_PLUGIN_ROOT:\n${details}\n\n` +
                 `All plugin hook commands must reference $CLAUDE_PLUGIN_ROOT for portability.`);
+        }
+    });
+    it('source hook commands do not hardcode /bin/sh so native Windows can spawn them', () => {
+        if (!existsSync(HOOKS_JSON_PATH))
+            return;
+        const hooksJson = JSON.parse(readFileSync(HOOKS_JSON_PATH, 'utf-8'));
+        const violations = [];
+        for (const [eventType, eventHooks] of Object.entries(hooksJson.hooks || {})) {
+            for (const hookGroup of eventHooks) {
+                for (const hook of hookGroup.hooks) {
+                    if (hook.type !== 'command')
+                        continue;
+                    if (hook.command.includes('/bin/sh')) {
+                        violations.push({ event: eventType, command: hook.command });
+                    }
+                }
+            }
+        }
+        if (violations.length > 0) {
+            const details = violations.map(v => `  ${v.event}: ${v.command}`).join('\n');
+            expect.fail(`Found hook commands hardcoding /bin/sh:\n${details}\n\n` +
+                `Source hook commands must not use shell bootstraps; use direct node run.cjs commands.`);
+        }
+    });
+    it('source hook commands use direct node run.cjs without sh/find-node bootstraps', () => {
+        if (!existsSync(HOOKS_JSON_PATH))
+            return;
+        const hooksJson = JSON.parse(readFileSync(HOOKS_JSON_PATH, 'utf-8'));
+        const violations = [];
+        for (const [eventType, eventHooks] of Object.entries(hooksJson.hooks || {})) {
+            for (const hookGroup of eventHooks) {
+                for (const hook of hookGroup.hooks) {
+                    if (hook.type !== 'command')
+                        continue;
+                    if (!hook.command.startsWith('node "$CLAUDE_PLUGIN_ROOT"/scripts/run.cjs ')) {
+                        violations.push({ event: eventType, command: hook.command, reason: 'not direct node run.cjs' });
+                    }
+                    if (/^(?:"\/bin\/sh"|sh)\s/.test(hook.command) || hook.command.includes('find-node.sh')) {
+                        violations.push({ event: eventType, command: hook.command, reason: 'uses sh/find-node bootstrap' });
+                    }
+                }
+            }
+        }
+        if (violations.length > 0) {
+            const details = violations.map(v => `  ${v.event} (${v.reason}): ${v.command}`).join('\n');
+            expect.fail(`Found non-Windows-safe source hook commands in hooks.json:\n${details}\n\n` +
+                `Source plugin manifest commands must be direct: node "$CLAUDE_PLUGIN_ROOT"/scripts/run.cjs ...`);
         }
     });
     it('no hook command contains an absolute node binary path', () => {
@@ -422,6 +514,17 @@ describe('Contract 10: installer manages stale OMC-created agents and skills', (
         for (const dir of skillDirs) {
             expect(dir.name).toMatch(/^[a-z][a-z0-9-]*$/);
         }
+    });
+});
+describe('OMC setup Ralph Ruby dependency guidance (issue #2969)', () => {
+    it('checks Ruby during setup with product-facing Ralph remediation', () => {
+        const phasePath = join(REPO_ROOT, 'skills', 'omc-setup', 'phases', '02-configure.md');
+        const content = readFileSync(phasePath, 'utf-8');
+        expect(content).toContain('Step 2.0: Check Ralph Ruby Dependency');
+        expect(content).toContain('command -v ruby');
+        expect(content).toContain('Ralph workflows require Ruby');
+        expect(content).toContain('sudo apt update && sudo apt install ruby-full');
+        expect(content).toContain('restart Claude Code');
     });
 });
 //# sourceMappingURL=setup-contracts-regression.test.js.map

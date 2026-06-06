@@ -7,7 +7,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/Yeachan-Heo/oh-my-claudecode?style=flat&color=yellow)](https://github.com/Yeachan-Heo/oh-my-claudecode/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Sponsor](https://img.shields.io/badge/Sponsor-❤️-red?style=flat&logo=github)](https://github.com/sponsors/Yeachan-Heo)
-[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/PUwSMR9XNk)
+[![Discord](https://img.shields.io/discord/1452487457085063218?color=5865F2&logo=discord&logoColor=white&label=Discord)](https://discord.gg/sj4exxQ9v)
 
 > **Para usuários do Codex:** Confira [oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex) — a mesma experiência de orquestração para o OpenAI Codex CLI.
 
@@ -15,7 +15,7 @@
 
 *Não aprenda Claude Code. Só use OMC.*
 
-[Começar Rápido](#início-rápido) • [Documentação](https://yeachan-heo.github.io/oh-my-claudecode-website) • [Referência CLI](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#cli-reference) • [Workflows](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#workflows) • [Guia de Migração](docs/MIGRATION.md)
+[Começar Rápido](#início-rápido) • [Documentação](https://yeachan-heo.github.io/oh-my-claudecode-website) • [Referência CLI](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference) • [Workflows](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows) • [Guia de Migração](docs/MIGRATION.md) • [Discord](https://discord.gg/sj4exxQ9v)
 
 ---
 
@@ -146,7 +146,7 @@ Se você tiver problemas depois de atualizar, limpe o cache antigo do plugin:
 ## Recursos
 
 ### Modos de Orquestração
-Múltiplas estratégias para diferentes casos de uso — da orquestração com Team até refatoração com eficiência de tokens. [Saiba mais →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#execution-modes)
+Múltiplas estratégias para diferentes casos de uso — da orquestração com Team até refatoração com eficiência de tokens. [Saiba mais →](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#execution-modes)
 
 | Modo | O que é | Usar para |
 |------|---------|-----------|
@@ -203,7 +203,7 @@ Envolva o handler em server.py:42 com try/except ClientDisconnectedError...
 ```
 
 **Gerenciamento de skills:** `/skill list | add | remove | edit | search`
-**Auto-aprendizado:** `/learner` extrai padrões reutilizáveis com critérios de qualidade rigorosos
+**Auto-aprendizado:** `/skillify` extrai padrões reutilizáveis com critérios de qualidade rigorosos
 **Auto-injeção:** Skills correspondentes são carregadas no contexto automaticamente — sem necessidade de chamada manual
 
 [Lista completa de recursos →](docs/REFERENCE.md)
@@ -333,10 +333,10 @@ Veja `scripts/openclaw-gateway-demo.mjs` para um gateway de referência que retr
 ## Documentação
 
 - **[Referência Completa](docs/REFERENCE.md)** - Documentação completa de recursos
-- **[Referência CLI](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#cli-reference)** - Todos os comandos, flags e ferramentas do `omc`
-- **[Guia de Notificações](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#notifications)** - Configuração de Discord, Telegram, Slack e webhooks
-- **[Workflows Recomendados](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#workflows)** - Cadeias de skills testadas em batalha para tarefas comuns
-- **[Notas de Lançamento](https://yeachan-heo.github.io/oh-my-claudecode-website/docs.html#release-notes)** - Novidades em cada versão
+- **[Referência CLI](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#cli-reference)** - Todos os comandos, flags e ferramentas do `omc`
+- **[Guia de Notificações](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#notifications)** - Configuração de Discord, Telegram, Slack e webhooks
+- **[Workflows Recomendados](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#workflows)** - Cadeias de skills testadas em batalha para tarefas comuns
+- **[Notas de Lançamento](https://yeachan-heo.github.io/oh-my-claudecode-website/docs/#release-notes)** - Novidades em cada versão
 - **[Website](https://yeachan-heo.github.io/oh-my-claudecode-website)** - Guias interativos e exemplos
 - **[Guia de Migração](docs/MIGRATION.md)** - Upgrade a partir da v2.x
 - **[Arquitetura](docs/ARCHITECTURE.md)** - Como funciona por baixo dos panos

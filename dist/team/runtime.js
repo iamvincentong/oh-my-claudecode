@@ -1,9 +1,10 @@
 import { mkdir, writeFile, readFile, rm, rename } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
+import { tmuxExecAsync } from '../cli/tmux-utils.js';
 import { buildWorkerArgv, resolveValidatedBinaryPath, getWorkerEnv as getModelWorkerEnv, isPromptModeAgent, getPromptModeArgs, resolveClaudeWorkerModel } from './model-contract.js';
 import { validateTeamName } from './team-name.js';
-import { createTeamSession, spawnWorkerInPane, sendToWorker, isWorkerAlive, killTeamSession, resolveSplitPaneWorkerPaneIds, waitForPaneReady, applyMainVerticalLayout, } from './tmux-session.js';
+import { createTeamSession, spawnWorkerInPane, sendToWorker, isWorkerAlive, killTeamSession, resolveSplitPaneWorkerPaneIds, waitForPaneReady, applyMainVerticalLayout, killTeamPane, } from './tmux-session.js';
 import { composeInitialInbox, ensureWorkerStateDir, writeWorkerOverlay, generateTriggerMessage, } from './worker-bootstrap.js';
 import { cleanupTeamWorktrees } from './git-worktree.js';
 import { withTaskLock, writeTaskFailure, DEFAULT_MAX_TASK_RETRIES, } from './task-file-ops.js';
@@ -346,7 +347,7 @@ export async function monitorTeam(teamName, cwd, workerPaneIds) {
         workers.push(status);
         if (!alive)
             deadWorkers.push(wName);
-        // Note: CLI workers (codex/gemini) may not write heartbeat.json — stall is advisory only
+        // Note: CLI workers (codex/gemini/grok) may not write heartbeat.json — stall is advisory only
     }
     const workerScanMs = Date.now() - workerScanStartedAt;
     // Infer phase from task counts
@@ -517,14 +518,11 @@ export async function spawnWorkerForTask(runtime, workerNameValue, taskIndex) {
     const marked = await markTaskInProgress(root, taskId, workerNameValue, runtime.teamName, runtime.cwd);
     if (!marked)
         return '';
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
     const splitTarget = runtime.workerPaneIds.length === 0
         ? runtime.leaderPaneId
         : runtime.workerPaneIds[runtime.workerPaneIds.length - 1];
     const splitType = runtime.workerPaneIds.length === 0 ? '-h' : '-v';
-    const splitResult = await execFileAsync('tmux', [
+    const splitResult = await tmuxExecAsync([
         'split-window', splitType, '-t', splitTarget,
         '-d', '-P', '-F', '#{pane_id}',
         '-c', runtime.cwd,
@@ -569,6 +567,11 @@ export async function spawnWorkerForTask(runtime, workerNameValue, taskIndex) {
                 || process.env.OMC_GEMINI_DEFAULT_MODEL
                 || undefined;
         }
+        if (agentType === 'grok') {
+            return process.env.OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL
+                || process.env.OMC_GROK_DEFAULT_MODEL
+                || undefined;
+        }
         // Claude agents: resolve Bedrock/Vertex model when on those providers
         return resolveClaudeWorkerModel();
     })();
@@ -581,6 +584,8 @@ export async function spawnWorkerForTask(runtime, workerNameValue, taskIndex) {
     });
     // For prompt-mode agents (e.g. Gemini Ink TUI), pass instruction via CLI
     // flag so tmux send-keys never needs to interact with the TUI input widget.
+    // Codex and Claude team workers are persistent interactive panes and are
+    // nudged through the inbox transport instead of `codex exec`/print modes.
     if (usePromptMode) {
         const promptArgs = getPromptModeArgs(agentType, generateTriggerMessage(runtime.teamName, workerNameValue));
         launchArgs.push(...promptArgs);
@@ -621,7 +626,7 @@ export async function spawnWorkerForTask(runtime, workerNameValue, taskIndex) {
             }
             await new Promise(r => setTimeout(r, 800));
         }
-        const notified = await notifyPaneWithRetry(runtime.sessionName, paneId, generateTriggerMessage(runtime.teamName, workerNameValue));
+        const notified = await notifyPaneWithRetry(runtime.sessionName, paneId, generateTriggerMessage(runtime.teamName, workerNameValue), 1);
         if (!notified) {
             await killWorkerPane(runtime, workerNameValue, paneId);
             await resetTaskToPending(root, taskId, runtime.teamName, runtime.cwd);
@@ -637,10 +642,7 @@ export async function spawnWorkerForTask(runtime, workerNameValue, taskIndex) {
  */
 export async function killWorkerPane(runtime, workerNameValue, paneId) {
     try {
-        const { execFile } = await import('child_process');
-        const { promisify } = await import('util');
-        const execFileAsync = promisify(execFile);
-        await execFileAsync('tmux', ['kill-pane', '-t', paneId]);
+        await killTeamPane(paneId);
     }
     catch {
         // idempotent: pane may already be gone
@@ -712,11 +714,11 @@ export async function shutdownTeam(teamName, sessionName, cwd, timeoutMs = 30_00
         teamName,
     });
     const configData = await readJsonSafe(join(root, 'config.json'));
-    // CLI workers (claude/codex/gemini tmux pane processes) never write shutdown-ack.json.
+    // CLI workers (claude/codex/gemini/grok tmux pane processes) never write shutdown-ack.json.
     // Polling for ACK files on CLI worker teams wastes the full timeoutMs on every shutdown.
     // Detect CLI worker teams by checking if all agent types are known CLI types, and skip
     // ACK polling — the tmux kill below handles process cleanup instead.
-    const CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini']);
+    const CLI_AGENT_TYPES = new Set(['claude', 'codex', 'gemini', 'grok']);
     const agentTypes = configData?.agentTypes ?? [];
     const isCliWorkerTeam = agentTypes.length > 0 && agentTypes.every(t => CLI_AGENT_TYPES.has(t));
     if (!isCliWorkerTeam) {
@@ -770,18 +772,15 @@ export async function resumeTeam(teamName, cwd) {
     if (!configData)
         return null;
     // Check if session is alive
-    const { execFile } = await import('child_process');
-    const { promisify } = await import('util');
-    const execFileAsync = promisify(execFile);
     const sName = configData.tmuxSession || `omc-team-${teamName}`;
     try {
-        await execFileAsync('tmux', ['has-session', '-t', sName.split(':')[0]]);
+        await tmuxExecAsync(['has-session', '-t', sName.split(':')[0]]);
     }
     catch {
         return null; // Session not alive
     }
     const paneTarget = sName.includes(':') ? sName : sName.split(':')[0];
-    const panesResult = await execFileAsync('tmux', [
+    const panesResult = await tmuxExecAsync([
         'list-panes', '-t', paneTarget, '-F', '#{pane_id}'
     ]);
     const allPanes = panesResult.stdout.trim().split('\n').filter(Boolean);

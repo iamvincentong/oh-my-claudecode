@@ -62,11 +62,14 @@ export {
   findPrdPath,
   getPrdPath,
   getOmcPrdPath,
+  getSessionPrdPath,
+  getLegacyStatePrdPath,
 
   // PRD status & operations
   getPrdStatus,
   markStoryComplete,
   markStoryIncomplete,
+  markStoryArchitectVerified,
   getStory,
   getNextStory,
 
@@ -74,6 +77,7 @@ export {
   createPrd,
   createSimplePrd,
   initPrd,
+  ensurePrdForStartup,
 
   // Formatting
   formatPrdStatus,

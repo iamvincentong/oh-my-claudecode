@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { isAbsolute, normalize, win32 as win32Path } from 'path';
+import { isAbsolute, normalize, sep, win32 as win32Path } from 'path';
 import { validateTeamName } from './team-name.js';
 import { normalizeToCcAlias } from '../features/delegation-enforcer.js';
 import { isBedrock, isVertexAI, isProviderSpecificModelId } from '../config/models.js';
@@ -21,6 +21,7 @@ function getTrustedPrefixes() {
         trusted.push(`${home}/.local/bin`);
         trusted.push(`${home}/.nvm/`);
         trusted.push(`${home}/.cargo/bin`);
+        trusted.push(`${home}/.grok/bin`);
     }
     const custom = (process.env.OMC_TRUSTED_CLI_DIRS ?? '')
         .split(':')
@@ -32,7 +33,18 @@ function getTrustedPrefixes() {
 }
 function isTrustedPrefix(resolvedPath) {
     const normalized = normalize(resolvedPath);
-    return getTrustedPrefixes().some(prefix => normalized.startsWith(normalize(prefix)));
+    return getTrustedPrefixes().some(prefix => {
+        // `normalize` strips trailing separators, so a plain `startsWith` would treat
+        // a sibling whose name merely begins with the prefix as trusted — e.g.
+        // `/usr/bin` would match `/usr/bin-malicious/grok`, and `~/.local/bin` would
+        // match `~/.local/bin-evil/x`. Enforce a directory boundary: the resolved
+        // path must be the trusted dir itself or a true descendant (prefix + sep).
+        const p = normalize(prefix);
+        if (normalized === p)
+            return true;
+        const withSep = p.endsWith(sep) ? p : p + sep;
+        return normalized.startsWith(withSep);
+    });
 }
 function assertBinaryName(binary) {
     if (!/^[A-Za-z0-9._-]+$/.test(binary)) {
@@ -96,7 +108,18 @@ export function validateCliBinaryPath(binary) {
 export const _testInternals = {
     UNTRUSTED_PATH_PATTERNS,
     getTrustedPrefixes,
+    isTrustedPrefix,
 };
+/**
+ * Detect parent launch env for Claude Code API-key auth.
+ *
+ * Claude Code's `--dangerously-skip-permissions` only bypasses permission
+ * prompts. When an API key is present, `--bare` is needed to avoid the
+ * interactive OAuth/session login path for team worker panes.
+ */
+export function shouldUseClaudeBareMode(env = process.env) {
+    return typeof env.ANTHROPIC_API_KEY === 'string' && env.ANTHROPIC_API_KEY.trim().length > 0;
+}
 const CONTRACTS = {
     claude: {
         agentType: 'claude',
@@ -104,6 +127,9 @@ const CONTRACTS = {
         installInstructions: 'Install Claude CLI: https://claude.ai/download',
         buildLaunchArgs(model, extraFlags = []) {
             const args = ['--dangerously-skip-permissions'];
+            if (shouldUseClaudeBareMode() && !extraFlags.includes('--bare')) {
+                args.push('--bare');
+            }
             if (model) {
                 // Provider-specific model IDs (Bedrock, Vertex) must be passed as-is.
                 // Normalizing them to aliases like "sonnet" causes Claude Code to expand
@@ -122,9 +148,10 @@ const CONTRACTS = {
         agentType: 'codex',
         binary: 'codex',
         installInstructions: 'Install Codex CLI: npm install -g @openai/codex',
-        supportsPromptMode: true,
-        // Codex accepts prompt as a positional argument (no flag needed):
-        //   codex [OPTIONS] [PROMPT]
+        // Team workers must be persistent interactive panes. Do not use `codex exec`
+        // or positional prompt mode here; runtime dispatch writes inbox.md and nudges
+        // the live Codex TUI with `codex` as the worker process.
+        supportsPromptMode: false,
         buildLaunchArgs(model, extraFlags = []) {
             const args = ['--dangerously-bypass-approvals-and-sandbox'];
             if (model)
@@ -156,12 +183,46 @@ const CONTRACTS = {
         binary: 'gemini',
         installInstructions: 'Install Gemini CLI: npm install -g @google/gemini-cli',
         supportsPromptMode: true,
-        promptModeFlag: '-i',
+        promptModeFlag: '-p',
         buildLaunchArgs(model, extraFlags = []) {
             const args = ['--approval-mode', 'yolo'];
             if (model)
                 args.push('--model', model);
             return [...args, ...extraFlags];
+        },
+        parseOutput(rawOutput) {
+            return rawOutput.trim();
+        },
+    },
+    grok: {
+        agentType: 'grok',
+        binary: 'grok',
+        installInstructions: 'Install Grok Build: https://build.grok.com',
+        supportsPromptMode: true,
+        promptModeFlag: '-p',
+        buildLaunchArgs(model, extraFlags = []) {
+            const args = ['--always-approve'];
+            if (model)
+                args.push('--model', model);
+            return [...args, ...extraFlags];
+        },
+        parseOutput(rawOutput) {
+            return rawOutput.trim();
+        },
+    },
+    cursor: {
+        agentType: 'cursor',
+        binary: 'cursor-agent',
+        installInstructions: 'Install Cursor Agent CLI: see https://docs.cursor.com/cli',
+        // cursor-agent runs as an interactive REPL — no exit-on-complete prompt mode.
+        // Keep supportsPromptMode false so the verdict-file contract path
+        // (CONTRACT_ROLES + shouldInjectContract) skips this provider; cursor
+        // workers participate as executors only.
+        supportsPromptMode: false,
+        buildLaunchArgs(_model, extraFlags = []) {
+            // Minimal flags — cursor-agent owns its own session/auth state.
+            // The model is selected interactively inside cursor-agent itself.
+            return [...extraFlags];
         },
         parseOutput(rawOutput) {
             return rawOutput.trim();
@@ -275,6 +336,8 @@ const WORKER_MODEL_ENV_ALLOWLIST = [
     'OMC_CODEX_DEFAULT_MODEL',
     'OMC_EXTERNAL_MODELS_DEFAULT_GEMINI_MODEL',
     'OMC_GEMINI_DEFAULT_MODEL',
+    'OMC_EXTERNAL_MODELS_DEFAULT_GROK_MODEL',
+    'OMC_GROK_DEFAULT_MODEL',
 ];
 export function getWorkerEnv(teamName, workerName, agentType, env = process.env) {
     validateTeamName(teamName);
@@ -355,7 +418,7 @@ export function getPromptModeArgs(agentType, instruction) {
     if (!contract.supportsPromptMode) {
         return [];
     }
-    // If a flag is defined (e.g. gemini's '-i'), prepend it; otherwise the
+    // If a flag is defined (e.g. gemini's '-p'), prepend it; otherwise the
     // instruction is passed as a positional argument (e.g. codex [PROMPT]).
     if (contract.promptModeFlag) {
         return [contract.promptModeFlag, instruction];
